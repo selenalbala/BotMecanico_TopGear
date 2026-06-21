@@ -23,6 +23,9 @@ const path = require("path");
 const config = require("./config");
 
 const calcSessions = new Map();
+const employeeGuildCache = new Map();
+const EMPLOYEE_CACHE_MS = 10 * 60 * 1000;
+
 
 process.env.TZ = config.TIMEZONE || process.env.TZ || "Europe/Madrid";
 
@@ -319,34 +322,59 @@ async function obtenerMiembroSeguro(guild, userId) {
   return guild.members.cache.get(userId) || await guild.members.fetch(userId).catch(() => null);
 }
 
-async function obtenerEmpleadosGuild(interactionOrGuild, data = cargarDatos()) {
+async function obtenerEmpleadosGuild(interactionOrGuild, data = cargarDatos(), opciones = {}) {
   const guild = interactionOrGuild?.guild || interactionOrGuild;
   const roleIds = rolesEmpleadosConfigurados();
   const empleados = new Map();
+  const cacheKey = guild?.id || "sin-guild";
+  const now = Date.now();
+  const cached = employeeGuildCache.get(cacheKey);
 
-  if (guild && roleIds.length) {
+  if (!opciones.force && cached?.empleados?.length && now - cached.createdAt < EMPLOYEE_CACHE_MS) {
+    for (const emp of cached.empleados) empleados.set(emp.userId, emp);
+  }
+
+  if (!empleados.size && guild && roleIds.length) {
     try {
       // Necesita Server Members Intent activado en el Developer Portal.
+      // No lo hacemos en cada click: Discord puede limitar opcode 8 si se abusa.
       await guild.members.fetch();
       for (const member of guild.members.cache.values()) {
         if (member.user?.bot) continue;
         if (!memberTieneRolEmpleado(member)) continue;
-        const roleNames = roleIds
-          .filter(roleId => member.roles.cache.has(roleId))
+        const memberRoleIds = roleIds.filter(roleId => member.roles.cache.has(roleId));
+        const roleNames = memberRoleIds
           .map(roleId => member.guild.roles.cache.get(roleId)?.name || "Rol")
           .filter(Boolean);
         const displayName = nombreDesdeMember(member);
         const avatarURL = avatarUsuario(member);
-        touchEmpleado(data, member.id, displayName, {
-          avatarURL,
-          roleIds: roleIds.filter(roleId => member.roles.cache.has(roleId)),
-          roleNames
-        });
+        touchEmpleado(data, member.id, displayName, { avatarURL, roleIds: memberRoleIds, roleNames });
         empleados.set(member.id, { userId: member.id, displayName, avatarURL, roleNames });
       }
+      const listaCache = [...empleados.values()].sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
+      employeeGuildCache.set(cacheKey, { createdAt: now, empleados: listaCache });
       guardarDatos(data);
     } catch (error) {
-      console.warn("No se pudo cargar la lista completa de empleados por roles. Revisa Server Members Intent:", error.message);
+      const aviso = String(error?.message || error);
+      console.warn("No se pudo cargar la lista completa de empleados por roles. Se usará caché/datos guardados:", aviso);
+
+      if (cached?.empleados?.length) {
+        for (const emp of cached.empleados) empleados.set(emp.userId, emp);
+      } else {
+        // Fallback adicional: si algunos miembros están cacheados, úsalo sin pedir otro fetch masivo.
+        for (const member of guild.members.cache.values()) {
+          if (member.user?.bot) continue;
+          if (!memberTieneRolEmpleado(member)) continue;
+          const memberRoleIds = roleIds.filter(roleId => member.roles.cache.has(roleId));
+          const roleNames = memberRoleIds
+            .map(roleId => member.guild.roles.cache.get(roleId)?.name || "Rol")
+            .filter(Boolean);
+          const displayName = nombreDesdeMember(member);
+          const avatarURL = avatarUsuario(member);
+          touchEmpleado(data, member.id, displayName, { avatarURL, roleIds: memberRoleIds, roleNames });
+          empleados.set(member.id, { userId: member.id, displayName, avatarURL, roleNames });
+        }
+      }
     }
   }
 
@@ -356,7 +384,7 @@ async function obtenerEmpleadosGuild(interactionOrGuild, data = cargarDatos()) {
     const emp = data.employees?.[userId] || {};
     empleados.set(userId, {
       userId,
-      displayName: emp.displayName || `Usuario ${userId}`,
+      displayName: emp.displayName || "Usuario desconocido",
       avatarURL: emp.avatarURL || null,
       roleNames: emp.roleNames || []
     });
@@ -364,7 +392,6 @@ async function obtenerEmpleadosGuild(interactionOrGuild, data = cargarDatos()) {
 
   return [...empleados.values()].sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
 }
-
 
 function pad2(value) {
   return String(value).padStart(2, "0");
@@ -498,7 +525,7 @@ async function resolverEmpleado(interaction, texto, data = cargarDatos()) {
 
   const id = extraerUserId(entrada);
   if (id) {
-    let displayName = data.employees[id]?.displayName || `Usuario ${id}`;
+    let displayName = data.employees[id]?.displayName || "Usuario desconocido";
     try {
       const member = await interaction.guild?.members.fetch(id);
       if (member?.displayName) displayName = member.displayName;
@@ -595,13 +622,13 @@ function obtenerIdsEmpleados(data) {
 
 function embedEmpleado(data, userId, range, title = "Consulta de empleado") {
   const empleado = data.employees?.[userId];
-  const displayName = empleado?.displayName || `Usuario ${userId}`;
+  const displayName = empleado?.displayName || "Usuario desconocido";
   const total = calcularMinutosEmpleado(data, userId, range);
   const detalle = total.lineas.length
     ? total.lineas.slice(-18).join("\n")
     : "No hay fichajes en este periodo.";
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(COLOR_TOPGEAR_GREEN)
     .setTitle(title)
     .setDescription(`**Empleado:** ${displayName}\n**Periodo:** ${etiquetaRango(range)}\n**Total:** ${minutosAHoras(total.minutos)}${total.abiertos ? "\nTiene un fichaje abierto." : ""}`)
@@ -611,6 +638,9 @@ function embedEmpleado(data, userId, range, title = "Consulta de empleado") {
       { name: "Detalle", value: limitarTexto(detalle, 1000), inline: false }
     )
     .setTimestamp();
+
+  if (empleado?.avatarURL) embed.setThumbnail(empleado.avatarURL);
+  return embed;
 }
 
 function embedTodos(data, range, title = "Consulta de empleados") {
@@ -630,6 +660,39 @@ function embedTodos(data, range, title = "Consulta de empleados") {
       return `• **${item.displayName}** — ${minutosAHoras(item.minutos)}${ajuste}${aviso}`;
     }).join("\n")
     : "No hay fichajes en este periodo.";
+
+  const totalGeneral = resultados.reduce((acc, item) => acc + item.minutos, 0);
+
+  return new EmbedBuilder()
+    .setColor(COLOR_TOPGEAR_GREEN)
+    .setTitle(title)
+    .setDescription(limitarTexto(descripcion))
+    .addFields(
+      { name: "Periodo", value: etiquetaRango(range), inline: true },
+      { name: "Empleados", value: String(resultados.length), inline: true },
+      { name: "Total general", value: minutosAHoras(totalGeneral), inline: true }
+    )
+    .setTimestamp();
+}
+
+function embedTodosDesdeLista(data, empleados, range, title = "Consulta de empleados") {
+  const lista = Array.isArray(empleados) ? empleados : [];
+  const resultados = lista.map(emp => {
+    const userId = emp.userId;
+    const total = calcularMinutosEmpleado(data, userId, range);
+    const displayName = emp.displayName || data.employees?.[userId]?.displayName || "Usuario desconocido";
+    return { userId, displayName, roleNames: emp.roleNames || [], ...total };
+  })
+    // Aquí NO filtramos por horas: en pagos deben aparecer todos los empleados con rol, aunque estén a 0.
+    .sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
+
+  const descripcion = resultados.length
+    ? resultados.map(item => {
+      const ajuste = item.minutosAjuste ? ` · ajustes ${minutosAHoras(item.minutosAjuste)}` : "";
+      const abierto = item.abiertos ? " · fichaje abierto" : "";
+      return `• **${item.displayName}** — ${minutosAHoras(item.minutos)}${ajuste}${abierto}`;
+    }).join("\n")
+    : "No hay empleados cargados. Revisa TRACKED_EMPLOYEE_ROLE_IDS y Server Members Intent.";
 
   const totalGeneral = resultados.reduce((acc, item) => acc + item.minutos, 0);
 
@@ -729,7 +792,7 @@ function empleadosParaSelector(data) {
   return obtenerIdsEmpleados(data)
     .map(userId => ({
       userId,
-      displayName: data.employees?.[userId]?.displayName || `Usuario ${userId}`,
+      displayName: data.employees?.[userId]?.displayName || "Usuario desconocido",
       avatarURL: data.employees?.[userId]?.avatarURL || null,
       roleNames: data.employees?.[userId]?.roleNames || []
     }))
