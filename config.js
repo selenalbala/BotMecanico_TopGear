@@ -4,10 +4,37 @@ function env(name, fallback = "") {
   return String(value).trim();
 }
 
+function envAny(names, fallback = "") {
+  for (const name of names) {
+    const value = env(name, "");
+    if (value) return value;
+  }
+  return fallback;
+}
+
+function extraerId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const match = text.match(/\d{15,25}/);
+  return match ? match[0] : text;
+}
+
+function envId(names, fallback = "") {
+  return extraerId(envAny(names, fallback));
+}
+
 function envList(name, fallback = "") {
   return env(name, fallback)
     .split(/[;,\s]+/g)
     .map(value => value.trim())
+    .filter(Boolean);
+}
+
+function envIdList(names, fallback = "") {
+  const raw = Array.isArray(names) ? envAny(names, fallback) : env(names, fallback);
+  return raw
+    .split(/[;,\s]+/g)
+    .map(extraerId)
     .filter(Boolean);
 }
 
@@ -69,7 +96,7 @@ function getCalculatorItems() {
 
 module.exports = {
   TOKEN: env("DISCORD_TOKEN"),
-  GUILD_ID: env("GUILD_ID"),
+  GUILD_ID: envId(["GUILD_ID", "SERVER_ID"]),
   TIMEZONE: env("TZ", env("TIMEZONE", "Europe/Madrid")),
   DATA_DIR: env("DATA_DIR", env("STOCK_DATA_DIR", env("RAILWAY_VOLUME_MOUNT_PATH", ""))),
   DATA_FILE: env("DATA_FILE"),
@@ -78,20 +105,23 @@ module.exports = {
   CURRENCY_SUFFIX: env("CURRENCY_SUFFIX", "$"),
 
   CHANNELS: {
-    FICHAJES: env("FICHAJES_CHANNEL_ID"),
-    PAGOS: env("PAGOS_CHANNEL_ID"),
-    CALCULADORA: env("CALCULADORA_CHANNEL_ID"),
-    POSTULANTES: env("POSTULANTES_CHANNEL_ID"),
-    LOGS: env("LOG_CHANNEL_ID")
+    // FICHAJES acepta también CHANNEL_ID para compatibilidad con versiones anteriores.
+    FICHAJES: envId(["FICHAJES_CHANNEL_ID", "FICHAJE_CHANNEL_ID", "CLOCK_CHANNEL_ID", "CHANNEL_ID"]),
+    PAGOS: envId(["PAGOS_CHANNEL_ID", "PAGO_CHANNEL_ID", "PAYMENTS_CHANNEL_ID", "PAYMENT_CHANNEL_ID"]),
+    CALCULADORA: envId(["CALCULADORA_CHANNEL_ID", "CALCULATOR_CHANNEL_ID", "CALCULADORA_ID"]),
+    POSTULANTES: envId(["POSTULANTES_CHANNEL_ID", "POSTULACIONES_CHANNEL_ID", "APPLICATIONS_CHANNEL_ID", "POSTULANTES_ID"]),
+    LOGS: envId(["LOG_CHANNEL_ID", "LOGS_CHANNEL_ID", "AUDIT_CHANNEL_ID"])
   },
 
   ROLES: {
-    ADMINS: envList("ADMIN_ROLE_IDS"),
-    MANAGERS: envList("MANAGER_ROLE_IDS"),
-    EMPLOYEES: envList("EMPLOYEE_ROLE_IDS"),
-    PAYMENTS: envList("PAYMENT_ROLE_IDS"),
-    APPLICATION_REVIEWERS: envList("APPLICATION_REVIEWER_ROLE_IDS")
+    ADMINS: envIdList(["ADMIN_ROLE_IDS", "ADMINS_ROLE_IDS", "BOSS_ROLE_IDS", "BOSS_ROLES"]),
+    MANAGERS: envIdList(["MANAGER_ROLE_IDS", "MANAGERS_ROLE_IDS", "STAFF_ROLE_IDS"]),
+    EMPLOYEES: envIdList(["EMPLOYEE_ROLE_IDS", "EMPLOYEES_ROLE_IDS", "WORKER_ROLE_IDS"]),
+    PAYMENTS: envIdList(["PAYMENT_ROLE_IDS", "PAYMENTS_ROLE_IDS", "PAGOS_ROLE_IDS"]),
+    APPLICATION_REVIEWERS: envIdList(["APPLICATION_REVIEWER_ROLE_IDS", "POSTULANTES_REVIEWER_ROLE_IDS", "REVIEWER_ROLE_IDS"])
   },
+
+  AUTO_PUBLISH_PANELS: envBool("AUTO_PUBLISH_PANELS", true),
 
   CALCULATOR_ITEMS: getCalculatorItems(),
   CALCULATOR_DISCOUNTS: envList("CALCULATOR_DISCOUNTS", "0,5,10,15")

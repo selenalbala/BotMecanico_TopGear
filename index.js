@@ -46,7 +46,7 @@ const DATA_FILE = config.DATA_FILE ? path.resolve(config.DATA_FILE) : path.join(
 const BACKUP_DIR = path.join(path.dirname(DATA_FILE), "backups");
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
   partials: [Partials.Channel]
 });
 
@@ -148,6 +148,43 @@ function logDatos() {
   console.log(`Datos guardándose en: ${DATA_FILE}`);
   if (!config.DATA_FILE && !config.DATA_DIR && !process.env.RAILWAY_VOLUME_MOUNT_PATH && !existeDirectorio("/data")) {
     console.warn("AVISO: no se ha detectado volumen persistente. En Railway monta un Volume en /data o define DATA_DIR=/data.");
+  }
+}
+
+function logConfiguracionPaneles() {
+  console.log("Configuración de canales cargada:");
+  console.log(`- FICHAJES_CHANNEL_ID / CHANNEL_ID: ${config.CHANNELS.FICHAJES || "NO CONFIGURADO"}`);
+  console.log(`- PAGOS_CHANNEL_ID: ${config.CHANNELS.PAGOS || "NO CONFIGURADO"}`);
+  console.log(`- CALCULADORA_CHANNEL_ID: ${config.CHANNELS.CALCULADORA || "NO CONFIGURADO"}`);
+  console.log(`- POSTULANTES_CHANNEL_ID: ${config.CHANNELS.POSTULANTES || "NO CONFIGURADO"}`);
+  console.log(`- LOG_CHANNEL_ID: ${config.CHANNELS.LOGS || "NO CONFIGURADO"}`);
+}
+
+async function comprobarPermisosCanal(channel, key) {
+  try {
+    const guild = channel.guild;
+    if (!guild) return true;
+    const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+    if (!me) {
+      console.warn(`No se pudo comprobar permisos para el panel ${key}. Intentaré publicar igualmente.`);
+      return true;
+    }
+
+    const permisos = channel.permissionsFor(me);
+    const faltan = [];
+    if (!permisos?.has(PermissionsBitField.Flags.ViewChannel)) faltan.push("Ver canal");
+    if (!permisos?.has(PermissionsBitField.Flags.SendMessages)) faltan.push("Enviar mensajes");
+    if (!permisos?.has(PermissionsBitField.Flags.EmbedLinks)) faltan.push("Insertar enlaces / Embed Links");
+    if (!permisos?.has(PermissionsBitField.Flags.ReadMessageHistory)) faltan.push("Leer historial de mensajes");
+
+    if (faltan.length) {
+      console.error(`No puedo publicar el panel ${key} en #${channel.name || channel.id}. Faltan permisos: ${faltan.join(", ")}.`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.warn(`No se pudieron comprobar permisos del panel ${key}:`, error.message);
+    return true;
   }
 }
 
@@ -624,9 +661,11 @@ async function publicarPanel(key, channelId) {
   }
 
   if (!channel?.isTextBased()) {
-    console.error(`El canal ${channelId} no es de texto para el panel ${key}.`);
+    console.error(`El canal ${channelId} no es de texto para el panel ${key}. Usa un canal de texto normal.`);
     return false;
   }
+
+  if (!(await comprobarPermisosCanal(channel, key))) return false;
 
   const data = cargarDatos();
   const guardado = data.panelMessages?.[key];
@@ -667,12 +706,22 @@ async function publicarPanel(key, channelId) {
 }
 
 async function publicarPaneles() {
-  const resultados = [];
-  resultados.push(await publicarPanel("fichajes", config.CHANNELS.FICHAJES));
-  resultados.push(await publicarPanel("pagos", config.CHANNELS.PAGOS));
-  if (config.CHANNELS.CALCULADORA) resultados.push(await publicarPanel("calculadora", config.CHANNELS.CALCULADORA));
-  if (config.CHANNELS.POSTULANTES) resultados.push(await publicarPanel("postulantes", config.CHANNELS.POSTULANTES));
-  return resultados.filter(Boolean).length;
+  const paneles = [
+    ["fichajes", config.CHANNELS.FICHAJES, "FICHAJES_CHANNEL_ID o CHANNEL_ID"],
+    ["pagos", config.CHANNELS.PAGOS, "PAGOS_CHANNEL_ID"],
+    ["calculadora", config.CHANNELS.CALCULADORA, "CALCULADORA_CHANNEL_ID"],
+    ["postulantes", config.CHANNELS.POSTULANTES, "POSTULANTES_CHANNEL_ID"]
+  ];
+
+  let publicados = 0;
+  for (const [key, channelId, variable] of paneles) {
+    if (!channelId) {
+      console.warn(`Panel ${key} no publicado: falta variable ${variable}.`);
+      continue;
+    }
+    if (await publicarPanel(key, channelId)) publicados += 1;
+  }
+  return publicados;
 }
 
 function crearModalRangoTodos() {
@@ -1052,10 +1101,16 @@ async function manejarPostulacion(interaction) {
 
 client.once(Events.ClientReady, async () => {
   logDatos();
+  logConfiguracionPaneles();
   console.log(`Bot conectado como ${client.user.tag}`);
   await registrarComandos();
-  const publicados = await publicarPaneles();
-  await enviarLog(`✅ Bot iniciado. Paneles publicados/actualizados: ${publicados}.`);
+
+  if (config.AUTO_PUBLISH_PANELS) {
+    const publicados = await publicarPaneles();
+    await enviarLog(`✅ Bot iniciado. Paneles publicados/actualizados: ${publicados}.`);
+  } else {
+    console.log("AUTO_PUBLISH_PANELS=false. No se publican paneles al iniciar. Usa /paneles para publicarlos manualmente.");
+  }
 });
 
 client.on(Events.InteractionCreate, async interaction => {
