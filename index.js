@@ -15,16 +15,16 @@ const {
   MessageFlags,
   Events
 } = require("discord.js");
-
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
 
-const STOCK_FILE_NAME = "stock.json";
+process.env.TZ = config.TIMEZONE || process.env.TZ || "Europe/Madrid";
 
-function rutaUnica(rutas) {
-  return [...new Set(rutas.filter(Boolean).map(ruta => path.resolve(ruta)))];
-}
+const DATA_FILE_NAME = "topgear-data.json";
+const PREFIX = "tg";
+const MINUTE = 60 * 1000;
+const MAX_DESCRIPTION = 3800;
 
 function existeDirectorio(ruta) {
   try {
@@ -34,222 +34,87 @@ function existeDirectorio(ruta) {
   }
 }
 
-function elegirDirectorioPreferido() {
-  if (process.env.STOCK_FILE) return path.dirname(process.env.STOCK_FILE);
-  if (process.env.STOCK_DATA_DIR) return process.env.STOCK_DATA_DIR;
-  if (process.env.DATA_DIR) return process.env.DATA_DIR;
-  if (process.env.RAILWAY_VOLUME_MOUNT_PATH) return process.env.RAILWAY_VOLUME_MOUNT_PATH;
-
-  // Si en Railway montas un Volume en /data, el bot guardará aquí y no se perderá en redeploys.
+function elegirDataDir() {
+  if (config.DATA_FILE) return path.dirname(config.DATA_FILE);
+  if (config.DATA_DIR) return config.DATA_DIR;
   if (existeDirectorio("/data")) return "/data";
-
-  // Fallback local. En Railway sin Volume esto NO es persistente entre redeploys.
   return path.join(__dirname, "data");
 }
 
-const DATA_DIR = elegirDirectorioPreferido();
-const DATA_FILE = process.env.STOCK_FILE
-  ? path.resolve(process.env.STOCK_FILE)
-  : path.join(DATA_DIR, STOCK_FILE_NAME);
+const DATA_DIR = elegirDataDir();
+const DATA_FILE = config.DATA_FILE ? path.resolve(config.DATA_FILE) : path.join(DATA_DIR, DATA_FILE_NAME);
 const BACKUP_DIR = path.join(path.dirname(DATA_FILE), "backups");
-
-function leerJsonSeguro(filePath) {
-  try {
-    if (!fs.existsSync(filePath)) return null;
-    if (!fs.statSync(filePath).isFile()) return null;
-
-    const contenido = fs.readFileSync(filePath, "utf8").trim();
-    if (!contenido) return null;
-
-    const data = JSON.parse(contenido);
-    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-function puntuacionStock(data) {
-  if (!data || typeof data !== "object") return -1;
-
-  let total = 0;
-
-  if (data.weapons && typeof data.weapons === "object") {
-    for (const cantidad of Object.values(data.weapons)) {
-      const numero = Number(cantidad);
-      if (Number.isFinite(numero) && numero > 0) total += numero;
-    }
-  }
-
-  if (data.drugs && typeof data.drugs === "object") {
-    for (const estados of Object.values(data.drugs)) {
-      if (!estados || typeof estados !== "object") continue;
-
-      for (const cantidad of Object.values(estados)) {
-        const numero = Number(cantidad);
-        if (Number.isFinite(numero) && numero > 0) total += numero;
-      }
-    }
-  }
-
-  const dinero = Number(data.money || 0);
-  if (Number.isFinite(dinero) && dinero > 0) total += dinero;
-
-  if (data.panelMessageId) total += 1;
-  if (data.mafiaLevel && Number(data.mafiaLevel) !== 1) total += 1;
-
-  return total;
-}
-
-function posiblesArchivosStock() {
-  return rutaUnica([
-    DATA_FILE,
-    "/data/stock.json",
-    "/app/data/stock.json",
-    "/app/stock.json",
-    path.join(process.cwd(), "data", "stock.json"),
-    path.join(process.cwd(), "stock.json"),
-    path.join(__dirname, "data", "stock.json"),
-    path.join(__dirname, "stock.json")
-  ]);
-}
-
-function prepararArchivoDatos() {
-  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-
-  const encontrados = posiblesArchivosStock()
-    .map(filePath => ({ filePath, data: leerJsonSeguro(filePath) }))
-    .filter(item => item.data)
-    .map(item => ({ ...item, score: puntuacionStock(item.data) }))
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      if (a.filePath === path.resolve(DATA_FILE)) return -1;
-      if (b.filePath === path.resolve(DATA_FILE)) return 1;
-      return 0;
-    });
-
-  if (encontrados.length > 0) {
-    const mejor = encontrados[0];
-
-    if (mejor.filePath !== path.resolve(DATA_FILE)) {
-      fs.copyFileSync(mejor.filePath, DATA_FILE);
-      console.log(`Stock recuperado de ${mejor.filePath} y copiado a ${DATA_FILE}`);
-    }
-  }
-
-  console.log(`Datos guardándose en: ${DATA_FILE}`);
-
-  if (!process.env.STOCK_FILE && !process.env.STOCK_DATA_DIR && !process.env.DATA_DIR && !process.env.RAILWAY_VOLUME_MOUNT_PATH && !existeDirectorio("/data")) {
-    console.warn("AVISO: no se ha detectado Volume de Railway. Si redeployas, el stock puede perderse. Monta un Volume en /data o define STOCK_DATA_DIR.");
-  }
-}
-
-prepararArchivoDatos();
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
   partials: [Partials.Channel]
 });
 
-function respuestaPrivada(opciones) {
-  return {
-    ...opciones,
-    flags: MessageFlags.Ephemeral
-  };
+function respuestaPrivada(payload) {
+  return { ...payload, flags: MessageFlags.Ephemeral };
+}
+
+function generarId(prefix = "id") {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function crearDatosIniciales() {
-  const weapons = {};
-  const drugs = {};
-
-  for (const weapon of config.WEAPONS) {
-    weapons[weapon] = 0;
-  }
-
-  for (const drug of config.DRUGS) {
-    drugs[drug.id] = {};
-
-    for (const state of config.DRUG_STATES) {
-      drugs[drug.id][state.id] = 0;
-    }
-  }
-
   return {
-    panelMessageId: null,
-    mafiaLevel: 1,
-    money: 0,
-    weapons,
-    drugs
+    version: 2,
+    panelMessages: {},
+    openShifts: {},
+    entries: [],
+    employees: {},
+    applications: {},
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   };
 }
 
+function normalizarDatos(data) {
+  const inicial = crearDatosIniciales();
+  if (!data || typeof data !== "object" || Array.isArray(data)) return inicial;
+
+  data.version = 2;
+  data.panelMessages = data.panelMessages && typeof data.panelMessages === "object" ? data.panelMessages : {};
+  data.openShifts = data.openShifts && typeof data.openShifts === "object" ? data.openShifts : {};
+  data.entries = Array.isArray(data.entries) ? data.entries : [];
+  data.employees = data.employees && typeof data.employees === "object" ? data.employees : {};
+  data.applications = data.applications && typeof data.applications === "object" ? data.applications : {};
+  if (!data.createdAt) data.createdAt = new Date().toISOString();
+  data.updatedAt = new Date().toISOString();
+  return data;
+}
+
 function cargarDatos() {
-  if (!fs.existsSync(DATA_FILE)) {
-    const data = crearDatosIniciales();
-    guardarDatos(data);
-    return data;
-  }
-
   try {
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-
-    if (!data.weapons) data.weapons = {};
-    if (!data.drugs) data.drugs = {};
-    if (typeof data.money !== "number") data.money = 0;
-    if (!("panelMessageId" in data)) data.panelMessageId = null;
-
-    if (![1, 2, 3].includes(Number(data.mafiaLevel))) {
-      data.mafiaLevel = 1;
-    } else {
-      data.mafiaLevel = Number(data.mafiaLevel);
+    if (!fs.existsSync(DATA_FILE)) {
+      const data = crearDatosIniciales();
+      guardarDatos(data, { backup: false });
+      return data;
     }
 
-    for (const weapon of config.WEAPONS) {
-      if (typeof data.weapons[weapon] !== "number") {
-        data.weapons[weapon] = 0;
-      }
-    }
-
-    for (const drug of config.DRUGS) {
-      if (!data.drugs[drug.id] || typeof data.drugs[drug.id] !== "object") {
-        data.drugs[drug.id] = {};
-      }
-
-      for (const state of config.DRUG_STATES) {
-        if (typeof data.drugs[drug.id][state.id] !== "number") {
-          data.drugs[drug.id][state.id] = 0;
-        }
-      }
-    }
-
-    return data;
+    const contenido = fs.readFileSync(DATA_FILE, "utf8").trim();
+    if (!contenido) return crearDatosIniciales();
+    return normalizarDatos(JSON.parse(contenido));
   } catch (error) {
-    console.error("Error leyendo stock.json, se crea uno nuevo:", error);
-    const data = crearDatosIniciales();
-    guardarDatos(data);
-    return data;
+    console.error("No se pudo leer el archivo de datos. Se creará uno nuevo:", error.message);
+    return crearDatosIniciales();
   }
 }
 
-function fechaBackup() {
-  return new Date().toISOString().replace(/[:.]/g, "-");
-}
-
-function limpiarBackupsAntiguos(maxBackups = 30) {
+function limpiarBackupsAntiguos() {
   try {
     if (!fs.existsSync(BACKUP_DIR)) return;
-
     const backups = fs.readdirSync(BACKUP_DIR)
-      .filter(name => name.startsWith("stock-") && name.endsWith(".json"))
-      .map(name => ({
-        name,
-        filePath: path.join(BACKUP_DIR, name),
-        time: fs.statSync(path.join(BACKUP_DIR, name)).mtimeMs
-      }))
+      .filter(name => name.startsWith("topgear-") && name.endsWith(".json"))
+      .map(name => {
+        const filePath = path.join(BACKUP_DIR, name);
+        return { name, filePath, time: fs.statSync(filePath).mtimeMs };
+      })
       .sort((a, b) => b.time - a.time);
 
-    for (const backup of backups.slice(maxBackups)) {
+    for (const backup of backups.slice(config.MAX_BACKUPS || 40)) {
       fs.unlinkSync(backup.filePath);
     }
   } catch (error) {
@@ -257,853 +122,1074 @@ function limpiarBackupsAntiguos(maxBackups = 30) {
   }
 }
 
-function hacerBackupSiExiste() {
+function crearBackupSiExiste() {
   try {
     if (!fs.existsSync(DATA_FILE)) return;
-
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    const backupFile = path.join(BACKUP_DIR, `stock-${fechaBackup()}.json`);
-    fs.copyFileSync(DATA_FILE, backupFile);
+    const sello = new Date().toISOString().replace(/[:.]/g, "-");
+    fs.copyFileSync(DATA_FILE, path.join(BACKUP_DIR, `topgear-${sello}.json`));
     limpiarBackupsAntiguos();
   } catch (error) {
-    console.warn("No se pudo crear backup del stock:", error.message);
+    console.warn("No se pudo crear backup:", error.message);
   }
 }
 
-function guardarDatos(data) {
+function guardarDatos(data, options = {}) {
+  const { backup = true } = options;
   fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-  hacerBackupSiExiste();
-
+  const normalizado = normalizarDatos(data);
+  if (backup) crearBackupSiExiste();
   const temporal = `${DATA_FILE}.tmp`;
-  fs.writeFileSync(temporal, JSON.stringify(data, null, 2), "utf8");
+  fs.writeFileSync(temporal, JSON.stringify(normalizado, null, 2), "utf8");
   fs.renameSync(temporal, DATA_FILE);
 }
 
+function logDatos() {
+  console.log(`Datos guardándose en: ${DATA_FILE}`);
+  if (!config.DATA_FILE && !config.DATA_DIR && !process.env.RAILWAY_VOLUME_MOUNT_PATH && !existeDirectorio("/data")) {
+    console.warn("AVISO: no se ha detectado volumen persistente. En Railway monta un Volume en /data o define DATA_DIR=/data.");
+  }
+}
+
+function tieneRol(interaction, roleIds) {
+  const ids = Array.isArray(roleIds) ? roleIds.filter(Boolean) : [];
+  if (config.ADMIN_BYPASS && interaction.member?.permissions?.has(PermissionsBitField.Flags.Administrator)) return true;
+  if (!interaction.member?.roles?.cache) return false;
+  return ids.some(roleId => interaction.member.roles.cache.has(roleId));
+}
+
+function tieneCualquierRol(interaction, grupos) {
+  return grupos.some(grupo => tieneRol(interaction, grupo));
+}
+
+function esAdminOEncargado(interaction) {
+  return tieneCualquierRol(interaction, [config.ROLES.ADMINS, config.ROLES.MANAGERS]);
+}
+
+function puedeFichar(interaction) {
+  if (!config.ROLES.EMPLOYEES.length) return true;
+  return tieneCualquierRol(interaction, [config.ROLES.EMPLOYEES, config.ROLES.MANAGERS, config.ROLES.ADMINS]);
+}
+
+function puedeGestionarPagos(interaction) {
+  return tieneCualquierRol(interaction, [config.ROLES.PAYMENTS, config.ROLES.MANAGERS, config.ROLES.ADMINS]);
+}
+
+function nombreMiembro(interaction) {
+  return interaction.member?.displayName || interaction.user?.globalName || interaction.user?.username || `Usuario ${interaction.user?.id || "desconocido"}`;
+}
+
+function touchEmpleado(data, userId, displayName) {
+  if (!userId) return;
+  const anterior = data.employees[userId] || {};
+  data.employees[userId] = {
+    userId,
+    displayName: displayName || anterior.displayName || `Usuario ${userId}`,
+    firstSeenAt: anterior.firstSeenAt || new Date().toISOString(),
+    lastSeenAt: new Date().toISOString()
+  };
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function formatDate(date) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function formatTime(date) {
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function formatDateTime(date) {
+  return `${formatDate(date)} ${formatTime(date)}`;
+}
+
+function parseDateOnly(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day, 0, 0, 0, 0);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date;
+}
+
+function addDays(date, days) {
+  const copy = new Date(date.getTime());
+  copy.setDate(copy.getDate() + days);
+  return copy;
+}
+
+function startOfDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+}
+
+function startOfWeek(date = new Date()) {
+  const base = startOfDay(date);
+  const day = base.getDay();
+  const mondayDiff = day === 0 ? -6 : 1 - day;
+  const sundayDiff = -day;
+  return addDays(base, config.WEEK_START === "sunday" ? sundayDiff : mondayDiff);
+}
+
+function rangoEstaSemana() {
+  const start = startOfWeek(new Date());
+  return { start, endExclusive: addDays(start, 7), label: "esta semana" };
+}
+
+function rangoSemanaPasada() {
+  const thisStart = startOfWeek(new Date());
+  const start = addDays(thisStart, -7);
+  return { start, endExclusive: thisStart, label: "semana pasada" };
+}
+
+function rangoDesdeHasta(desdeTexto, hastaTexto) {
+  const start = parseDateOnly(desdeTexto);
+  const endInclusive = parseDateOnly(hastaTexto);
+  if (!start || !endInclusive) return null;
+  if (endInclusive < start) return null;
+  return {
+    start,
+    endExclusive: addDays(endInclusive, 1),
+    label: `${formatDate(start)} a ${formatDate(endInclusive)}`
+  };
+}
+
+function endInclusive(range) {
+  return addDays(range.endExclusive, -1);
+}
+
+function etiquetaRango(range) {
+  return `${formatDate(range.start)} → ${formatDate(endInclusive(range))}`;
+}
+
+function parseHoras(text) {
+  const raw = String(text || "").trim().toLowerCase().replace(/horas?/g, "").trim();
+  if (!raw) return null;
+
+  const hm = raw.match(/^(-?\d+)\s*[:h]\s*(\d{1,2})$/);
+  if (hm) {
+    const sign = Number(hm[1]) < 0 ? -1 : 1;
+    const horas = Math.abs(Number(hm[1]));
+    const minutos = Number(hm[2]);
+    if (!Number.isFinite(horas) || !Number.isFinite(minutos) || minutos > 59) return null;
+    return sign * (horas * 60 + minutos);
+  }
+
+  const normalized = raw.replace(",", ".");
+  const value = Number(normalized);
+  if (!Number.isFinite(value)) return null;
+  return Math.round(value * 60);
+}
+
+function minutosAHoras(minutos) {
+  const sign = minutos < 0 ? "-" : "";
+  const abs = Math.abs(Math.round(minutos));
+  const horas = Math.floor(abs / 60);
+  const mins = abs % 60;
+  return `${sign}${horas}h ${pad2(mins)}m`;
+}
+
 function formatearDinero(value) {
-  return `${new Intl.NumberFormat("es-ES").format(value)}$`;
+  return `${new Intl.NumberFormat("es-ES").format(value)}${config.CURRENCY_SUFFIX}`;
 }
 
-function tieneRol(interaction, rolesPermitidos) {
-  if (!interaction.member) return false;
+function limitarTexto(texto, max = MAX_DESCRIPTION) {
+  const string = String(texto || "");
+  return string.length > max ? `${string.slice(0, max - 30)}\n…resultado recortado.` : string;
+}
 
-  if (
-    config.ADMIN_BYPASS &&
-    interaction.member.permissions?.has(PermissionsBitField.Flags.Administrator)
-  ) {
-    return true;
+function normalizarBusqueda(texto) {
+  return String(texto || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function extraerUserId(texto) {
+  const match = String(texto || "").match(/\d{17,20}/);
+  return match ? match[0] : null;
+}
+
+async function resolverEmpleado(interaction, texto, data = cargarDatos()) {
+  const entrada = String(texto || "").trim();
+  if (!entrada) return { error: "Debes indicar una mención, ID o nombre del empleado." };
+
+  const id = extraerUserId(entrada);
+  if (id) {
+    let displayName = data.employees[id]?.displayName || `Usuario ${id}`;
+    try {
+      const member = await interaction.guild?.members.fetch(id);
+      if (member?.displayName) displayName = member.displayName;
+    } catch {
+      // No pasa nada: puede no estar cacheado o no estar en el servidor.
+    }
+    touchEmpleado(data, id, displayName);
+    return { userId: id, displayName };
   }
 
-  return rolesPermitidos.some(roleId => interaction.member.roles.cache.has(roleId));
-}
+  const query = normalizarBusqueda(entrada);
+  const coincidencias = Object.values(data.employees || {})
+    .filter(emp => normalizarBusqueda(emp.displayName).includes(query))
+    .slice(0, 10);
 
-function nombreUsuario(interaction) {
-  if (interaction.user?.id) return `<@${interaction.user.id}>`;
-  return "Alguien";
-}
-
-async function enviarLogSimple(texto) {
-  const logChannelId = process.env.LOG_CHANNEL_ID || config.LOG_CHANNEL_ID;
-
-  if (!logChannelId) {
-    console.warn("No se ha configurado LOG_CHANNEL_ID en config.js ni en Railway.");
-    return false;
+  if (coincidencias.length === 1) {
+    return { userId: coincidencias[0].userId, displayName: coincidencias[0].displayName };
   }
 
-  let channel;
-
-  try {
-    channel = await client.channels.fetch(logChannelId);
-  } catch (error) {
-    console.error(`No pude encontrar el canal de logs ${logChannelId}:`, error.message);
-    return false;
+  if (coincidencias.length > 1) {
+    return {
+      error: `Hay varios empleados con ese nombre. Usa la mención o ID.\n${coincidencias.map(emp => `• ${emp.displayName} — ${emp.userId}`).join("\n")}`
+    };
   }
 
-  if (!channel || !channel.isTextBased()) {
-    console.error(`El canal de logs ${logChannelId} no es un canal de texto válido.`);
-    return false;
-  }
-
-  try {
-    await channel.send(texto);
-    return true;
-  } catch (error) {
-    console.error(`No pude mandar el log al canal ${logChannelId}. Revisa permisos del bot en ese canal:`, error.message);
-    return false;
-  }
+  return { error: "No encontré ese empleado. Usa su mención o su ID de Discord." };
 }
 
-function armasPermitidasPorNivel() {
-  const data = cargarDatos();
-  const nivel = data.mafiaLevel || 1;
-  return config.MAFIA_LEVEL_WEAPONS[nivel] || config.MAFIA_LEVEL_WEAPONS[1];
-}
-
-function esRolSuperior(interaction) {
-  return tieneRol(interaction, config.ADD_ANY_WEAPON_ROLES);
-}
-
-function armasVisiblesParaUsuario(interaction) {
-  if (esRolSuperior(interaction)) {
-    return config.WEAPONS;
-  }
-
-  return armasPermitidasPorNivel();
-}
-
-function armasSeleccionablesParaUsuario(interaction, accion) {
-  // Los roles principales pueden AÑADIR y QUITAR cualquier arma del listado.
-  if (
-    (accion === "anadir" || accion === "quitar") &&
-    tieneRol(interaction, config.ADD_ANY_WEAPON_ROLES)
-  ) {
-    return config.WEAPONS;
-  }
-
-  // El resto solo puede trabajar con las armas activas por nivel.
-  return armasPermitidasPorNivel();
-}
-
-function obtenerDroga(drugId) {
-  return config.DRUGS.find(drug => drug.id === drugId) || null;
-}
-
-function obtenerEstadoDroga(stateId) {
-  return config.DRUG_STATES.find(state => state.id === stateId) || null;
-}
-
-function nombreDroga(drugId) {
-  return obtenerDroga(drugId)?.label || drugId;
-}
-
-function nombreEstadoDroga(stateId) {
-  return obtenerEstadoDroga(stateId)?.label || stateId;
-}
-
-function nombreDrogaCompleto(drugId, stateId) {
-  return `${nombreDroga(drugId)} ${nombreEstadoDroga(stateId).toLowerCase()}`;
-}
-
-function textoStockDrogas(data) {
+function calcularMinutosEmpleado(data, userId, range) {
+  const startMs = range.start.getTime();
+  const endMs = range.endExclusive.getTime();
+  let minutos = 0;
+  let minutosAjuste = 0;
+  let fichajes = 0;
+  let abiertos = 0;
   const lineas = [];
 
-  for (const drug of config.DRUGS) {
-    const partes = config.DRUG_STATES.map(state => {
-      const cantidad = data.drugs?.[drug.id]?.[state.id] || 0;
-      return `${state.label}: ${cantidad}`;
-    });
+  for (const entry of data.entries || []) {
+    if (entry.userId !== userId) continue;
 
-    lineas.push(`**${drug.label}:** ${partes.join(" | ")}`);
-  }
-
-  return lineas.join("\n");
-}
-
-// Panel público: no enseña stock, no enseña dinero y no enseña footer del candado.
-function crearEmbedPanel() {
-  const data = cargarDatos();
-  const armasPermitidas = armasPermitidasPorNivel();
-
-  return new EmbedBuilder()
-    .setColor(0xC01718)
-    .setTitle("Control de almacén")
-    .setDescription("Usa los botones para gestionar el almacén.")
-    .addFields(
-      {
-        name: "⭐ Nivel de mafia",
-        value: `**Nivel ${data.mafiaLevel || 1}**`,
-        inline: true
-      },
-      {
-        name: "✅ Armas activas por nivel",
-        value: armasPermitidas.join(", ") || "Ninguna",
-        inline: false
-      },
-      {
-        name: "🧪 Droga",
-        value: "Coca, heroína y meta. Cada una puede estar procesada o sin procesar.",
-        inline: false
+    if (entry.type === "adjustment") {
+      const fecha = parseDateOnly(entry.date);
+      if (!fecha) continue;
+      const fechaMs = fecha.getTime();
+      if (fechaMs >= startMs && fechaMs < endMs) {
+        const value = Number(entry.minutes || 0);
+        minutos += value;
+        minutosAjuste += value;
+        lineas.push(`🛠️ ${entry.date} — ajuste ${minutosAHoras(value)}${entry.note ? ` · ${entry.note}` : ""}`);
       }
-    )
-    .setTimestamp();
-}
+      continue;
+    }
 
-// Consulta privada del stock: cada usuario solo ve las armas que le corresponden por rol.
-function crearEmbedStockPrivado(interaction) {
-  const data = cargarDatos();
-  const armasVisibles = armasVisiblesParaUsuario(interaction);
-
-  const armasTexto = armasVisibles
-    .map(weapon => `**${weapon}:** ${data.weapons[weapon] || 0}`)
-    .join("\n");
-
-  return new EmbedBuilder()
-    .setColor(0xC01718)
-    .setTitle("Stock actual")
-    .addFields(
-      {
-        name: "⭐ Nivel de mafia",
-        value: `**Nivel ${data.mafiaLevel || 1}**`,
-        inline: true
-      },
-      {
-        name: "Armas",
-        value: armasTexto || "No hay armas para mostrar.",
-        inline: false
-      },
-      {
-        name: "Droga",
-        value: drogasTexto || "No hay droga para mostrar.",
-        inline: false
-      }
-    )
-    .setTimestamp();
-}
-
-function crearBotonesPanel() {
-  const filaArmas = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("arma_anadir")
-      .setLabel("Añadir arma")
-      .setEmoji("➕")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("arma_quitar")
-      .setLabel("Quitar arma")
-      .setEmoji("➖")
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId("stock_ver")
-      .setLabel("Ver stock")
-      .setEmoji("📦")
-      .setStyle(ButtonStyle.Secondary)
-  );
-
-  const filaDroga = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("droga_anadir")
-      .setLabel("Añadir droga")
-      .setEmoji("🧪")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("droga_quitar")
-      .setLabel("Quitar droga")
-      .setEmoji("🧫")
-      .setStyle(ButtonStyle.Danger)
-  );
-
-  const filaDinero = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("dinero_meter")
-      .setLabel("Meter dinero")
-      .setEmoji("💰")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("dinero_sacar")
-      .setLabel("Sacar dinero")
-      .setEmoji("💸")
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId("dinero_ver")
-      .setLabel("Ver dinero")
-      .setEmoji("👀")
-      .setStyle(ButtonStyle.Secondary)
-  );
-
-  return [filaArmas, filaDroga, filaDinero];
-}
-
-function esMensajePanelDelBot(message) {
-  if (!message || message.author?.id !== client.user.id) return false;
-
-  const tieneBotonesPanel = message.components?.some(row =>
-    row.components?.some(component =>
-      [
-        "arma_anadir",
-        "arma_quitar",
-        "stock_ver",
-        "droga_anadir",
-        "droga_quitar",
-        "dinero_meter",
-        "dinero_sacar",
-        "dinero_ver"
-      ].includes(component.customId)
-    )
-  );
-
-  const tituloEmbed = message.embeds?.[0]?.title || "";
-  const tituloValido =
-    tituloEmbed.includes("Control de almacén") ||
-    tituloEmbed.includes("Stock de armas") ||
-    tituloEmbed.includes("Stock actual");
-
-  return Boolean(tieneBotonesPanel || tituloValido);
-}
-
-async function buscarMensajePanelExistente(channel, data) {
-  if (data.panelMessageId) {
-    const mensajeGuardado = await channel.messages.fetch(data.panelMessageId).catch(() => null);
-
-    if (mensajeGuardado && esMensajePanelDelBot(mensajeGuardado)) {
-      return mensajeGuardado;
+    const inicio = new Date(entry.start);
+    const fin = entry.end ? new Date(entry.end) : new Date();
+    const iniMs = Math.max(inicio.getTime(), startMs);
+    const finMs = Math.min(fin.getTime(), endMs);
+    if (finMs > iniMs) {
+      const minutosEntrada = Math.round((finMs - iniMs) / MINUTE);
+      minutos += minutosEntrada;
+      fichajes += 1;
+      lineas.push(`• ${formatDate(inicio)} ${formatTime(inicio)} → ${entry.end ? formatTime(fin) : "abierto"} · ${minutosAHoras(minutosEntrada)}`);
+      if (!entry.end) abiertos += 1;
     }
   }
 
-  const mensajes = await channel.messages.fetch({ limit: 50 }).catch(() => null);
-  if (!mensajes) return null;
+  const open = data.openShifts?.[userId];
+  if (open?.start) {
+    const inicio = new Date(open.start);
+    const fin = new Date();
+    const iniMs = Math.max(inicio.getTime(), startMs);
+    const finMs = Math.min(fin.getTime(), endMs);
+    if (finMs > iniMs) {
+      const minutosEntrada = Math.round((finMs - iniMs) / MINUTE);
+      minutos += minutosEntrada;
+      abiertos += 1;
+      lineas.push(`🟢 ${formatDate(inicio)} ${formatTime(inicio)} → ahora · ${minutosAHoras(minutosEntrada)}`);
+    }
+  }
 
-  const paneles = mensajes
-    .filter(message => esMensajePanelDelBot(message))
-    .sort((a, b) => b.createdTimestamp - a.createdTimestamp);
-
-  return paneles.first() || null;
+  return { minutos, minutosAjuste, fichajes, abiertos, lineas };
 }
 
-async function borrarPanelesDuplicados(channel, panelCorrectoId) {
-  const mensajes = await channel.messages.fetch({ limit: 50 }).catch(() => null);
-  if (!mensajes) return;
+function obtenerIdsEmpleados(data) {
+  const ids = new Set(Object.keys(data.employees || {}));
+  for (const entry of data.entries || []) {
+    if (entry.userId) ids.add(entry.userId);
+  }
+  for (const userId of Object.keys(data.openShifts || {})) {
+    ids.add(userId);
+  }
+  return [...ids];
+}
 
-  const duplicados = mensajes.filter(
-    message => esMensajePanelDelBot(message) && message.id !== panelCorrectoId
-  );
+function embedEmpleado(data, userId, range, title = "Consulta de empleado") {
+  const empleado = data.employees?.[userId];
+  const displayName = empleado?.displayName || `Usuario ${userId}`;
+  const total = calcularMinutosEmpleado(data, userId, range);
+  const detalle = total.lineas.length
+    ? total.lineas.slice(-18).join("\n")
+    : "No hay fichajes en este periodo.";
 
-  for (const [, message] of duplicados) {
-    await message.delete().catch(() => {});
+  return new EmbedBuilder()
+    .setColor(0xC01718)
+    .setTitle(title)
+    .setDescription(`**Empleado:** ${displayName}\n**Periodo:** ${etiquetaRango(range)}\n**Total:** ${minutosAHoras(total.minutos)}${total.abiertos ? "\n🟢 Tiene un fichaje abierto." : ""}`)
+    .addFields(
+      { name: "Fichajes", value: String(total.fichajes), inline: true },
+      { name: "Ajustes", value: minutosAHoras(total.minutosAjuste), inline: true },
+      { name: "Detalle", value: limitarTexto(detalle, 1000), inline: false }
+    )
+    .setTimestamp();
+}
+
+function embedTodos(data, range, title = "Consulta de empleados") {
+  const ids = obtenerIdsEmpleados(data);
+  const resultados = ids.map(userId => {
+    const total = calcularMinutosEmpleado(data, userId, range);
+    const displayName = data.employees?.[userId]?.displayName || `Usuario ${userId}`;
+    return { userId, displayName, ...total };
+  })
+    .filter(item => item.minutos !== 0 || item.fichajes > 0 || item.abiertos > 0)
+    .sort((a, b) => b.minutos - a.minutos || a.displayName.localeCompare(b.displayName));
+
+  const descripcion = resultados.length
+    ? resultados.map(item => {
+      const aviso = item.abiertos ? " 🟢" : "";
+      const ajuste = item.minutosAjuste ? ` · ajustes ${minutosAHoras(item.minutosAjuste)}` : "";
+      return `• **${item.displayName}** — ${minutosAHoras(item.minutos)}${ajuste}${aviso}`;
+    }).join("\n")
+    : "No hay fichajes en este periodo.";
+
+  const totalGeneral = resultados.reduce((acc, item) => acc + item.minutos, 0);
+
+  return new EmbedBuilder()
+    .setColor(0xC01718)
+    .setTitle(title)
+    .setDescription(limitarTexto(descripcion))
+    .addFields(
+      { name: "Periodo", value: etiquetaRango(range), inline: true },
+      { name: "Empleados", value: String(resultados.length), inline: true },
+      { name: "Total general", value: minutosAHoras(totalGeneral), inline: true }
+    )
+    .setTimestamp();
+}
+
+async function enviarLog(texto) {
+  const logChannelId = config.CHANNELS.LOGS;
+  if (!logChannelId) {
+    console.warn("LOG_CHANNEL_ID no configurado.", texto);
+    return false;
+  }
+
+  try {
+    const channel = await client.channels.fetch(logChannelId);
+    if (!channel?.isTextBased()) return false;
+    await channel.send(limitarTexto(texto, 1900));
+    return true;
+  } catch (error) {
+    console.error(`No se pudo enviar log al canal ${logChannelId}:`, error.message);
+    return false;
   }
 }
 
-async function actualizarPanel() {
+async function responderError(interaction, texto) {
+  const payload = respuestaPrivada({ content: `❌ ${texto}` });
+  if (interaction.replied || interaction.deferred) return interaction.followUp(payload).catch(() => {});
+  return interaction.reply(payload).catch(() => {});
+}
+
+async function responderOk(interaction, texto, extra = {}) {
+  const payload = respuestaPrivada({ content: `✅ ${texto}`, ...extra });
+  if (interaction.replied || interaction.deferred) return interaction.followUp(payload).catch(() => {});
+  return interaction.reply(payload).catch(() => {});
+}
+
+async function sinPermiso(interaction) {
+  return responderError(interaction, "No tienes permisos para usar esta opción.");
+}
+
+function crearEmbedFichajes() {
+  return new EmbedBuilder()
+    .setColor(0xC01718)
+    .setTitle("Top Gear | Fichajes")
+    .setDescription("Ficha tu **entrada** y **salida** desde este panel. También puedes consultar tus horas de esta semana y la semana pasada.")
+    .setTimestamp();
+}
+
+function crearBotonesFichajes() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:entrada`).setLabel("Entrada").setEmoji("🟢").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:salida`).setLabel("Salida").setEmoji("🔴").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras`).setLabel("Mis horas").setEmoji("⏱️").setStyle(ButtonStyle.Secondary)
+    )
+  ];
+}
+
+function crearEmbedPagos() {
+  return new EmbedBuilder()
+    .setColor(0xC01718)
+    .setTitle("Top Gear | Pagos")
+    .setDescription("Panel para consultar horas de empleados y modificar horas fichadas cuando haga falta.\n\nOpciones incluidas: todos los empleados, empleado concreto, esta semana, semana pasada y rango personalizado.")
+    .setTimestamp();
+}
+
+function crearBotonesPagos() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("Consultar empleado").setEmoji("📋").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:modificar`).setLabel("Modificar horas").setEmoji("🛠️").setStyle(ButtonStyle.Secondary)
+    )
+  ];
+}
+
+function crearOpcionesConsultaPagos() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:esta`).setLabel("Todos · esta semana").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:pasada`).setLabel("Todos · semana pasada").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:rango`).setLabel("Todos · rango").setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:empleado:esta`).setLabel("Empleado · esta semana").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:empleado:pasada`).setLabel("Empleado · semana pasada").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:empleado:rango`).setLabel("Empleado · rango").setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:modificar`).setLabel("Modificar horas empleado").setEmoji("🛠️").setStyle(ButtonStyle.Danger)
+    )
+  ];
+}
+
+function crearEmbedCalculadora() {
+  return new EmbedBuilder()
+    .setColor(0xC01718)
+    .setTitle("Top Gear | Calculadora")
+    .setDescription("Abre la calculadora para calcular mejoras, reparaciones y descuentos.")
+    .setTimestamp();
+}
+
+function crearBotonesCalculadora() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("Abrir calculadora").setEmoji("🧮").setStyle(ButtonStyle.Primary)
+    )
+  ];
+}
+
+function crearEmbedPostulantes() {
+  return new EmbedBuilder()
+    .setColor(0xC01718)
+    .setTitle("Top Gear | Postulaciones")
+    .setDescription("Pulsa el botón para enviar tu postulación al equipo de Top Gear.")
+    .setTimestamp();
+}
+
+function crearBotonesPostulantes() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("Postularse").setEmoji("📝").setStyle(ButtonStyle.Primary)
+    )
+  ];
+}
+
+function panelPayload(key) {
+  if (key === "fichajes") return { embeds: [crearEmbedFichajes()], components: crearBotonesFichajes() };
+  if (key === "pagos") return { embeds: [crearEmbedPagos()], components: crearBotonesPagos() };
+  if (key === "calculadora") return { embeds: [crearEmbedCalculadora()], components: crearBotonesCalculadora() };
+  if (key === "postulantes") return { embeds: [crearEmbedPostulantes()], components: crearBotonesPostulantes() };
+  return null;
+}
+
+function idsPanel(key) {
+  if (key === "fichajes") return [`${PREFIX}:ficha:entrada`, `${PREFIX}:ficha:salida`, `${PREFIX}:ficha:mishoras`];
+  if (key === "pagos") return [`${PREFIX}:pagos:consultar`, `${PREFIX}:pagos:modificar`];
+  if (key === "calculadora") return [`${PREFIX}:calc:abrir`];
+  if (key === "postulantes") return [`${PREFIX}:postular:abrir`];
+  return [];
+}
+
+function esMensajePanel(key, message) {
+  if (!message || message.author?.id !== client.user?.id) return false;
+  const ids = idsPanel(key);
+  return Boolean(message.components?.some(row => row.components?.some(component => ids.includes(component.customId))));
+}
+
+async function publicarPanel(key, channelId) {
+  if (!channelId) return false;
+  const payload = panelPayload(key);
+  if (!payload) return false;
+
+  let channel;
+  try {
+    channel = await client.channels.fetch(channelId);
+  } catch (error) {
+    console.error(`No se pudo encontrar el canal ${channelId} para el panel ${key}:`, error.message);
+    return false;
+  }
+
+  if (!channel?.isTextBased()) {
+    console.error(`El canal ${channelId} no es de texto para el panel ${key}.`);
+    return false;
+  }
+
   const data = cargarDatos();
-  const channel = await client.channels.fetch(config.CHANNEL_ID).catch(() => null);
+  const guardado = data.panelMessages?.[key];
+  let mensaje = null;
 
-  if (!channel || !channel.isTextBased()) {
-    console.log("No se ha encontrado el canal configurado.");
-    return;
+  if (guardado) {
+    mensaje = await channel.messages.fetch(guardado).catch(() => null);
   }
 
-  const payload = {
-    embeds: [crearEmbedPanel()],
-    components: crearBotonesPanel()
-  };
-
-  const panelExistente = await buscarMensajePanelExistente(channel, data);
-
-  if (panelExistente) {
-    await panelExistente.edit(payload);
-    data.panelMessageId = panelExistente.id;
-    guardarDatos(data);
-    await borrarPanelesDuplicados(channel, panelExistente.id);
-    console.log(`Panel actualizado en el canal ${config.CHANNEL_ID}. Mensaje: ${panelExistente.id}`);
-    return;
+  if (!mensaje) {
+    const recientes = await channel.messages.fetch({ limit: 25 }).catch(() => null);
+    mensaje = recientes?.filter(msg => esMensajePanel(key, msg)).first() || null;
   }
 
-  const nuevoMensaje = await channel.send(payload);
-  data.panelMessageId = nuevoMensaje.id;
-  guardarDatos(data);
-  await borrarPanelesDuplicados(channel, nuevoMensaje.id);
-  console.log(`Panel creado en el canal ${config.CHANNEL_ID}. Mensaje: ${nuevoMensaje.id}`);
+  try {
+    if (mensaje) {
+      await mensaje.edit(payload);
+      data.panelMessages[key] = mensaje.id;
+      guardarDatos(data);
+      console.log(`Panel ${key} actualizado en ${channelId}.`);
+    } else {
+      mensaje = await channel.send(payload);
+      data.panelMessages[key] = mensaje.id;
+      guardarDatos(data);
+      console.log(`Panel ${key} creado en ${channelId}.`);
+    }
+
+    const recientes = await channel.messages.fetch({ limit: 25 }).catch(() => null);
+    const duplicados = recientes?.filter(msg => esMensajePanel(key, msg) && msg.id !== mensaje.id) || [];
+    for (const [, msg] of duplicados) {
+      await msg.delete().catch(() => {});
+    }
+    return true;
+  } catch (error) {
+    console.error(`No se pudo publicar/editar el panel ${key} en ${channelId}:`, error.message);
+    return false;
+  }
+}
+
+async function publicarPaneles() {
+  const resultados = [];
+  resultados.push(await publicarPanel("fichajes", config.CHANNELS.FICHAJES));
+  resultados.push(await publicarPanel("pagos", config.CHANNELS.PAGOS));
+  if (config.CHANNELS.CALCULADORA) resultados.push(await publicarPanel("calculadora", config.CHANNELS.CALCULADORA));
+  if (config.CHANNELS.POSTULANTES) resultados.push(await publicarPanel("postulantes", config.CHANNELS.POSTULANTES));
+  return resultados.filter(Boolean).length;
+}
+
+function crearModalRangoTodos() {
+  return new ModalBuilder()
+    .setCustomId(`${PREFIX}:modal:todos:rango`)
+    .setTitle("Consultar todos por rango")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("desde").setLabel("Desde (YYYY-MM-DD)").setPlaceholder(formatDate(startOfWeek(new Date()))).setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("hasta").setLabel("Hasta (YYYY-MM-DD)").setPlaceholder(formatDate(new Date())).setStyle(TextInputStyle.Short).setRequired(true)
+      )
+    );
+}
+
+function crearModalEmpleado(tipoRango) {
+  const modal = new ModalBuilder()
+    .setCustomId(`${PREFIX}:modal:empleado:${tipoRango}`)
+    .setTitle(tipoRango === "rango" ? "Consultar empleado por rango" : "Consultar empleado")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("empleado").setLabel("Empleado: mención, ID o nombre").setPlaceholder("@Empleado o 123456789...").setStyle(TextInputStyle.Short).setRequired(true)
+      )
+    );
+
+  if (tipoRango === "rango") {
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("desde").setLabel("Desde (YYYY-MM-DD)").setPlaceholder(formatDate(startOfWeek(new Date()))).setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("hasta").setLabel("Hasta (YYYY-MM-DD)").setPlaceholder(formatDate(new Date())).setStyle(TextInputStyle.Short).setRequired(true)
+      )
+    );
+  }
+
+  return modal;
+}
+
+function crearModalModificarHoras() {
+  const today = formatDate(new Date());
+  return new ModalBuilder()
+    .setCustomId(`${PREFIX}:modal:modificar_horas`)
+    .setTitle("Modificar horas fichadas")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("empleado").setLabel("Empleado: mención, ID o nombre").setPlaceholder("@Empleado o 123456789...").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("desde").setLabel("Desde (YYYY-MM-DD)").setPlaceholder(today).setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("hasta").setLabel("Hasta (YYYY-MM-DD)").setPlaceholder(today).setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("horas").setLabel("Total exacto que debe quedar").setPlaceholder("Ejemplo: 8, 7.5 o 07:30").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("motivo").setLabel("Motivo / nota").setPlaceholder("Corrección manual").setStyle(TextInputStyle.Short).setRequired(false)
+      )
+    );
+}
+
+function crearModalPostulacion() {
+  return new ModalBuilder()
+    .setCustomId(`${PREFIX}:modal:postulacion`)
+    .setTitle("Postulación Top Gear")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("nombre_ic").setLabel("Nombre IC").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("nombre_ooc").setLabel("Nombre OOC").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("edad").setLabel("Edad OOC").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("experiencia").setLabel("Experiencia").setStyle(TextInputStyle.Paragraph).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("horario").setLabel("Horario disponible").setStyle(TextInputStyle.Short).setRequired(true)
+      )
+    );
+}
+
+function crearSelectorCalculadora() {
+  const items = config.CALCULATOR_ITEMS.slice(0, 25);
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`${PREFIX}:calc:items`)
+        .setPlaceholder("Selecciona servicios")
+        .setMinValues(1)
+        .setMaxValues(items.length)
+        .addOptions(items.map(item => ({ label: `${item.label} · ${formatearDinero(item.price)}`, value: item.id })))
+    )
+  ];
 }
 
 async function registrarComandos() {
   const comandos = [
     new SlashCommandBuilder()
-      .setName("nivelmafia")
-      .setDescription("Cambia el nivel de la mafia y activa las armas permitidas.")
-      .addIntegerOption(option =>
-        option
-          .setName("nivel")
-          .setDescription("Nivel de mafia: 1, 2 o 3")
-          .setRequired(true)
-          .addChoices(
-            { name: "Nivel 1", value: 1 },
-            { name: "Nivel 2", value: 2 },
-            { name: "Nivel 3", value: 3 }
-          )
-      )
-      .toJSON()
-  ];
+      .setName("paneles")
+      .setDescription("Republica/actualiza los paneles del bot."),
+    new SlashCommandBuilder()
+      .setName("horas")
+      .setDescription("Consulta horas fichadas.")
+      .addUserOption(option => option.setName("empleado").setDescription("Empleado. Si lo dejas vacío, consulta tus horas."))
+      .addStringOption(option => option.setName("desde").setDescription("Fecha desde YYYY-MM-DD"))
+      .addStringOption(option => option.setName("hasta").setDescription("Fecha hasta YYYY-MM-DD")),
+    new SlashCommandBuilder()
+      .setName("sethoras")
+      .setDescription("Modifica las horas de un empleado en un rango.")
+      .addUserOption(option => option.setName("empleado").setDescription("Empleado").setRequired(true))
+      .addStringOption(option => option.setName("desde").setDescription("Fecha desde YYYY-MM-DD").setRequired(true))
+      .addStringOption(option => option.setName("hasta").setDescription("Fecha hasta YYYY-MM-DD").setRequired(true))
+      .addStringOption(option => option.setName("horas").setDescription("Total exacto: 8, 7.5 o 07:30").setRequired(true))
+      .addStringOption(option => option.setName("motivo").setDescription("Motivo de la corrección"))
+  ].map(command => command.toJSON());
 
-  await client.application.commands.set(comandos);
-  console.log("Comando /nivelmafia registrado.");
+  try {
+    if (config.GUILD_ID) {
+      const guild = await client.guilds.fetch(config.GUILD_ID);
+      await guild.commands.set(comandos);
+      console.log(`Comandos registrados en servidor ${config.GUILD_ID}.`);
+    } else {
+      await client.application.commands.set(comandos);
+      console.log("Comandos globales registrados. Para cambios instantáneos, configura GUILD_ID.");
+    }
+  } catch (error) {
+    console.error("No se pudieron registrar comandos:", error.message);
+  }
 }
 
-function crearSelectorArma(interaction, accion) {
-  const armasSeleccionables = armasSeleccionablesParaUsuario(interaction, accion);
-  const texto =
-    accion === "anadir"
-      ? "Selecciona el arma que quieres añadir"
-      : "Selecciona el arma que quieres quitar";
-
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`selector_arma_${accion}`)
-      .setPlaceholder(texto)
-      .addOptions(
-        armasSeleccionables.map(weapon => ({
-          label: weapon,
-          value: weapon
-        }))
-      )
-  );
+function obtenerRangoPorTipo(tipo) {
+  if (tipo === "esta") return rangoEstaSemana();
+  if (tipo === "pasada") return rangoSemanaPasada();
+  return null;
 }
 
-function crearModalCantidadArma(accion, weapon) {
-  const titulo = accion === "anadir" ? `Añadir ${weapon}` : `Quitar ${weapon}`;
+async function manejarEntrada(interaction) {
+  if (!puedeFichar(interaction)) return sinPermiso(interaction);
 
-  return new ModalBuilder()
-    .setCustomId(`modal_arma_${accion}|${weapon}`)
-    .setTitle(titulo)
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("cantidad")
-          .setLabel("Cantidad de armas")
-          .setPlaceholder("Ejemplo: 5")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-      )
-    );
+  const data = cargarDatos();
+  const userId = interaction.user.id;
+  const displayName = nombreMiembro(interaction);
+  touchEmpleado(data, userId, displayName);
+
+  if (data.openShifts[userId]) {
+    const inicio = new Date(data.openShifts[userId].start);
+    guardarDatos(data);
+    return responderError(interaction, `Ya tienes una entrada abierta desde **${formatDateTime(inicio)}**.`);
+  }
+
+  data.openShifts[userId] = {
+    userId,
+    displayName,
+    start: new Date().toISOString()
+  };
+  guardarDatos(data);
+  await enviarLog(`🟢 **Entrada** · ${displayName} (<@${userId}>) · ${formatDateTime(new Date())}`);
+  return responderOk(interaction, `Entrada registrada a las **${formatTime(new Date())}**.`);
 }
 
-function crearSelectorDroga(accion) {
-  const texto =
-    accion === "anadir"
-      ? "Selecciona la droga que quieres añadir"
-      : "Selecciona la droga que quieres quitar";
+async function manejarSalida(interaction) {
+  if (!puedeFichar(interaction)) return sinPermiso(interaction);
 
-  const opciones = [];
+  const data = cargarDatos();
+  const userId = interaction.user.id;
+  const displayName = nombreMiembro(interaction);
+  touchEmpleado(data, userId, displayName);
 
-  for (const drug of config.DRUGS) {
-    for (const state of config.DRUG_STATES) {
-      opciones.push({
-        label: `${drug.label} ${state.label.toLowerCase()}`,
-        value: `${drug.id}|${state.id}`
-      });
+  const abierta = data.openShifts[userId];
+  if (!abierta) return responderError(interaction, "No tienes ninguna entrada abierta.");
+
+  const fin = new Date();
+  const inicio = new Date(abierta.start);
+  const minutos = Math.max(0, Math.round((fin.getTime() - inicio.getTime()) / MINUTE));
+
+  data.entries.push({
+    id: generarId("shift"),
+    type: "shift",
+    userId,
+    displayName,
+    start: abierta.start,
+    end: fin.toISOString(),
+    createdAt: fin.toISOString()
+  });
+  delete data.openShifts[userId];
+  guardarDatos(data);
+
+  await enviarLog(`🔴 **Salida** · ${displayName} (<@${userId}>) · ${formatDateTime(fin)} · Turno: **${minutosAHoras(minutos)}**`);
+  return responderOk(interaction, `Salida registrada. Turno total: **${minutosAHoras(minutos)}**.`);
+}
+
+async function manejarMisHoras(interaction) {
+  const data = cargarDatos();
+  const userId = interaction.user.id;
+  touchEmpleado(data, userId, nombreMiembro(interaction));
+  guardarDatos(data);
+
+  return interaction.reply(respuestaPrivada({
+    embeds: [
+      embedEmpleado(data, userId, rangoEstaSemana(), "Mis horas · esta semana"),
+      embedEmpleado(data, userId, rangoSemanaPasada(), "Mis horas · semana pasada")
+    ]
+  }));
+}
+
+async function consultarTodos(interaction, range) {
+  const data = cargarDatos();
+  return interaction.reply(respuestaPrivada({ embeds: [embedTodos(data, range, `Todos los empleados · ${range.label}`)] }));
+}
+
+async function consultarEmpleado(interaction, empleadoTexto, range) {
+  const data = cargarDatos();
+  const empleado = await resolverEmpleado(interaction, empleadoTexto, data);
+  if (empleado.error) return responderError(interaction, empleado.error);
+  guardarDatos(data);
+  return interaction.reply(respuestaPrivada({ embeds: [embedEmpleado(data, empleado.userId, range, `Empleado · ${range.label}`)] }));
+}
+
+async function modificarHorasEmpleado(interaction, empleadoTexto, desde, hasta, horasTexto, motivo = "") {
+  if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+
+  const range = rangoDesdeHasta(desde, hasta);
+  if (!range) return responderError(interaction, "Rango no válido. Usa fechas con formato YYYY-MM-DD y asegúrate de que `hasta` no sea anterior a `desde`." );
+
+  const minutosDeseados = parseHoras(horasTexto);
+  if (minutosDeseados === null || minutosDeseados < 0) return responderError(interaction, "Horas no válidas. Usa 8, 7.5, 7,5 o 07:30.");
+
+  const data = cargarDatos();
+  const empleado = await resolverEmpleado(interaction, empleadoTexto, data);
+  if (empleado.error) return responderError(interaction, empleado.error);
+
+  const actual = calcularMinutosEmpleado(data, empleado.userId, range).minutos;
+  const delta = minutosDeseados - actual;
+  const nota = String(motivo || "Corrección manual").trim().slice(0, 80);
+
+  if (delta !== 0) {
+    data.entries.push({
+      id: generarId("adjust"),
+      type: "adjustment",
+      userId: empleado.userId,
+      displayName: empleado.displayName,
+      date: formatDate(endInclusive(range)),
+      minutes: delta,
+      note: nota,
+      createdAt: new Date().toISOString(),
+      editedBy: interaction.user.id,
+      editedByName: nombreMiembro(interaction),
+      targetRange: { desde: formatDate(range.start), hasta: formatDate(endInclusive(range)) },
+      targetTotalMinutes: minutosDeseados
+    });
+  }
+
+  guardarDatos(data);
+  await enviarLog(`🛠️ **Horas modificadas** · ${empleado.displayName} (<@${empleado.userId}>) · ${etiquetaRango(range)} · Antes: **${minutosAHoras(actual)}** · Ahora: **${minutosAHoras(minutosDeseados)}** · Ajuste: **${minutosAHoras(delta)}** · Por ${nombreMiembro(interaction)}`);
+
+  return interaction.reply(respuestaPrivada({
+    content: delta === 0
+      ? "✅ No hizo falta crear ajuste: el total ya coincidía."
+      : `✅ Horas modificadas. Ajuste aplicado: **${minutosAHoras(delta)}**.`,
+    embeds: [embedEmpleado(data, empleado.userId, range, "Resultado tras modificar horas")]
+  }));
+}
+
+async function manejarComandoHoras(interaction) {
+  const user = interaction.options.getUser("empleado");
+  const desde = interaction.options.getString("desde");
+  const hasta = interaction.options.getString("hasta");
+  const range = desde || hasta ? rangoDesdeHasta(desde, hasta) : rangoEstaSemana();
+  if (!range) return responderError(interaction, "Rango no válido. Usa YYYY-MM-DD en `desde` y `hasta`." );
+
+  const userId = user?.id || interaction.user.id;
+  if (userId !== interaction.user.id && !puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+
+  const data = cargarDatos();
+  let displayName = user?.globalName || user?.username || data.employees?.[userId]?.displayName || `Usuario ${userId}`;
+  try {
+    const member = await interaction.guild?.members.fetch(userId);
+    if (member?.displayName) displayName = member.displayName;
+  } catch {}
+  touchEmpleado(data, userId, displayName);
+  guardarDatos(data);
+
+  return interaction.reply(respuestaPrivada({ embeds: [embedEmpleado(data, userId, range, userId === interaction.user.id ? "Mis horas" : "Horas de empleado")] }));
+}
+
+async function manejarComandoSetHoras(interaction) {
+  if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+  const user = interaction.options.getUser("empleado", true);
+  const desde = interaction.options.getString("desde", true);
+  const hasta = interaction.options.getString("hasta", true);
+  const horas = interaction.options.getString("horas", true);
+  const motivo = interaction.options.getString("motivo") || "Corrección manual";
+  return modificarHorasEmpleado(interaction, user.id, desde, hasta, horas, motivo);
+}
+
+async function manejarCalculadora(interaction) {
+  return interaction.reply(respuestaPrivada({
+    content: "Selecciona los servicios a calcular:",
+    components: crearSelectorCalculadora()
+  }));
+}
+
+async function manejarSelectorCalculadora(interaction) {
+  const ids = interaction.values || [];
+  const seleccionados = config.CALCULATOR_ITEMS.filter(item => ids.includes(item.id));
+  const subtotal = seleccionados.reduce((acc, item) => acc + item.price, 0);
+  const lineas = seleccionados.map(item => `• ${item.label}: **${formatearDinero(item.price)}**`).join("\n");
+  const descuentos = config.CALCULATOR_DISCOUNTS.length ? config.CALCULATOR_DISCOUNTS : [0, 5, 10, 15];
+  const textoDescuentos = descuentos.map(discount => {
+    const total = Math.round(subtotal * (1 - discount / 100));
+    return `• ${discount}%: **${formatearDinero(total)}**`;
+  }).join("\n");
+
+  const embed = new EmbedBuilder()
+    .setColor(0xC01718)
+    .setTitle("Calculadora Top Gear")
+    .setDescription(lineas || "Sin servicios seleccionados.")
+    .addFields(
+      { name: "Subtotal", value: `**${formatearDinero(subtotal)}**`, inline: true },
+      { name: "Con descuentos", value: textoDescuentos || "Sin descuentos configurados.", inline: false }
+    )
+    .setTimestamp();
+
+  return interaction.reply(respuestaPrivada({ embeds: [embed] }));
+}
+
+async function manejarPostulacion(interaction) {
+  const data = cargarDatos();
+  const id = generarId("app");
+  const values = {
+    nombreIc: interaction.fields.getTextInputValue("nombre_ic"),
+    nombreOoc: interaction.fields.getTextInputValue("nombre_ooc"),
+    edad: interaction.fields.getTextInputValue("edad"),
+    experiencia: interaction.fields.getTextInputValue("experiencia"),
+    horario: interaction.fields.getTextInputValue("horario")
+  };
+
+  data.applications[id] = {
+    id,
+    userId: interaction.user.id,
+    displayName: nombreMiembro(interaction),
+    ...values,
+    createdAt: new Date().toISOString()
+  };
+  guardarDatos(data);
+
+  const embed = new EmbedBuilder()
+    .setColor(0xC01718)
+    .setTitle("Nueva postulación Top Gear")
+    .setDescription(`Usuario: <@${interaction.user.id}>`)
+    .addFields(
+      { name: "Nombre IC", value: values.nombreIc, inline: true },
+      { name: "Nombre OOC", value: values.nombreOoc, inline: true },
+      { name: "Edad", value: values.edad, inline: true },
+      { name: "Horario", value: values.horario, inline: false },
+      { name: "Experiencia", value: limitarTexto(values.experiencia, 900), inline: false }
+    )
+    .setTimestamp();
+
+  if (config.CHANNELS.LOGS) {
+    try {
+      const channel = await client.channels.fetch(config.CHANNELS.LOGS);
+      if (channel?.isTextBased()) await channel.send({ embeds: [embed] });
+    } catch (error) {
+      console.error("No se pudo mandar la postulación a logs:", error.message);
     }
   }
 
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`selector_droga_${accion}`)
-      .setPlaceholder(texto)
-      .addOptions(opciones)
-  );
-}
-
-function crearModalCantidadDroga(accion, drugId, stateId) {
-  const nombre = nombreDrogaCompleto(drugId, stateId);
-  const titulo = accion === "anadir" ? `Añadir ${nombre}` : `Quitar ${nombre}`;
-
-  return new ModalBuilder()
-    .setCustomId(`modal_droga_${accion}|${drugId}|${stateId}`)
-    .setTitle(titulo)
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("cantidad")
-          .setLabel("Cantidad de droga")
-          .setPlaceholder("Ejemplo: 50")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-      )
-    );
-}
-
-function crearModalDinero(accion) {
-  const titulo = accion === "meter" ? "Meter dinero" : "Sacar dinero";
-
-  return new ModalBuilder()
-    .setCustomId(`modal_dinero_${accion}`)
-    .setTitle(titulo)
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId("cantidad")
-          .setLabel("Cantidad de dinero")
-          .setPlaceholder("Ejemplo: 25000")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-      )
-    );
-}
-
-function leerCantidad(texto) {
-  const limpio = String(texto)
-    .trim()
-    .replaceAll(".", "")
-    .replaceAll(",", "");
-
-  if (!/^\d+$/.test(limpio)) return null;
-
-  const numero = Number(limpio);
-  if (!Number.isSafeInteger(numero) || numero <= 0) return null;
-
-  return numero;
-}
-
-async function sinPermiso(interaction) {
-  return interaction.reply(
-    respuestaPrivada({
-      content: "❌ No tienes permisos para usar esta opción."
-    })
-  );
-}
-
-async function responderError(interaction, texto) {
-  return interaction.reply(
-    respuestaPrivada({
-      content: `❌ ${texto}`
-    })
-  );
-}
-
-async function responderOk(interaction, texto) {
-  return interaction.reply(
-    respuestaPrivada({
-      content: `✅ ${texto}`
-    })
-  );
+  return responderOk(interaction, "Postulación enviada correctamente.");
 }
 
 client.once(Events.ClientReady, async () => {
+  logDatos();
   console.log(`Bot conectado como ${client.user.tag}`);
   await registrarComandos();
-  await actualizarPanel();
-  await enviarLogSimple("✅ Bot iniciado y panel actualizado.");
+  const publicados = await publicarPaneles();
+  await enviarLog(`✅ Bot iniciado. Paneles publicados/actualizados: ${publicados}.`);
 });
 
 client.on(Events.InteractionCreate, async interaction => {
   try {
     if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === "nivelmafia") {
-        if (!tieneRol(interaction, config.SET_MAFIA_LEVEL_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        const nivel = interaction.options.getInteger("nivel");
-
-        if (![1, 2, 3].includes(nivel)) {
-          return responderError(interaction, "El nivel debe ser 1, 2 o 3.");
-        }
-
-        const data = cargarDatos();
-        data.mafiaLevel = nivel;
-        guardarDatos(data);
-        await actualizarPanel();
-
-        await enviarLogSimple(`⭐ ${nombreUsuario(interaction)} cambió el nivel de mafia a nivel ${nivel}.`);
-
-        const armas = config.MAFIA_LEVEL_WEAPONS[nivel].join(", ");
-
-        return interaction.reply(
-          respuestaPrivada({
-            content: `✅ Nivel de mafia cambiado a **nivel ${nivel}**.\nArmas activas: **${armas}**.`
-          })
-        );
+      if (interaction.commandName === "paneles") {
+        if (!esAdminOEncargado(interaction) && !puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const publicados = await publicarPaneles();
+        return responderOk(interaction, `Paneles actualizados: **${publicados}**.`);
       }
+
+      if (interaction.commandName === "horas") return manejarComandoHoras(interaction);
+      if (interaction.commandName === "sethoras") return manejarComandoSetHoras(interaction);
     }
 
     if (interaction.isButton()) {
-      if (interaction.customId === "arma_anadir") {
-        if (!tieneRol(interaction, config.ADD_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
+      const id = interaction.customId;
 
-        return interaction.reply(
-          respuestaPrivada({
-            content: "Elige el arma que quieres añadir.\nDespués te pedirá la cantidad.",
-            components: [crearSelectorArma(interaction, "anadir")]
-          })
-        );
+      if (id === `${PREFIX}:ficha:entrada`) return manejarEntrada(interaction);
+      if (id === `${PREFIX}:ficha:salida`) return manejarSalida(interaction);
+      if (id === `${PREFIX}:ficha:mishoras`) return manejarMisHoras(interaction);
+
+      if (id === `${PREFIX}:pagos:consultar`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        return interaction.reply(respuestaPrivada({
+          content: "Elige qué quieres consultar:",
+          components: crearOpcionesConsultaPagos()
+        }));
       }
 
-      if (interaction.customId === "arma_quitar") {
-        if (!tieneRol(interaction, config.REMOVE_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        return interaction.reply(
-          respuestaPrivada({
-            content: "Elige el arma que quieres quitar.\nDespués te pedirá la cantidad.",
-            components: [crearSelectorArma(interaction, "quitar")]
-          })
-        );
+      if (id === `${PREFIX}:pagos:modificar`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        return interaction.showModal(crearModalModificarHoras());
       }
 
-      if (interaction.customId === "stock_ver") {
-        return interaction.reply(
-          respuestaPrivada({
-            embeds: [crearEmbedStockPrivado(interaction)]
-          })
-        );
+      if (id === `${PREFIX}:pagos:todos:esta`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        return consultarTodos(interaction, rangoEstaSemana());
       }
 
-      if (interaction.customId === "droga_anadir") {
-        if (!tieneRol(interaction, config.ADD_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        return interaction.reply(
-          respuestaPrivada({
-            content: "Elige la droga que quieres añadir.\nDespués te pedirá la cantidad.",
-            components: [crearSelectorDroga("anadir")]
-          })
-        );
+      if (id === `${PREFIX}:pagos:todos:pasada`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        return consultarTodos(interaction, rangoSemanaPasada());
       }
 
-      if (interaction.customId === "droga_quitar") {
-        if (!tieneRol(interaction, config.REMOVE_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        return interaction.reply(
-          respuestaPrivada({
-            content: "Elige la droga que quieres quitar.\nDespués te pedirá la cantidad.",
-            components: [crearSelectorDroga("quitar")]
-          })
-        );
+      if (id === `${PREFIX}:pagos:todos:rango`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        return interaction.showModal(crearModalRangoTodos());
       }
 
-      if (interaction.customId === "dinero_meter") {
-        if (!tieneRol(interaction, config.ADD_MONEY_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        return interaction.showModal(crearModalDinero("meter"));
+      if (id === `${PREFIX}:pagos:empleado:esta`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        return interaction.showModal(crearModalEmpleado("esta"));
       }
 
-      if (interaction.customId === "dinero_sacar") {
-        if (!tieneRol(interaction, config.REMOVE_MONEY_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        return interaction.showModal(crearModalDinero("sacar"));
+      if (id === `${PREFIX}:pagos:empleado:pasada`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        return interaction.showModal(crearModalEmpleado("pasada"));
       }
 
-      if (interaction.customId === "dinero_ver") {
-        const data = cargarDatos();
-
-        return interaction.reply(
-          respuestaPrivada({
-            content: `Dinero actual: **${formatearDinero(data.money || 0)}**`
-          })
-        );
+      if (id === `${PREFIX}:pagos:empleado:rango`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        return interaction.showModal(crearModalEmpleado("rango"));
       }
+
+      if (id === `${PREFIX}:calc:abrir`) return manejarCalculadora(interaction);
+      if (id === `${PREFIX}:postular:abrir`) return interaction.showModal(crearModalPostulacion());
     }
 
     if (interaction.isStringSelectMenu()) {
-      if (interaction.customId.startsWith("selector_arma_")) {
-        const accion = interaction.customId.replace("selector_arma_", "");
-        const weapon = interaction.values[0];
-        const armasSeleccionables = armasSeleccionablesParaUsuario(interaction, accion);
-
-        if (!config.WEAPONS.includes(weapon)) {
-          return responderError(interaction, "Esa arma no existe en la configuración.");
-        }
-
-        if (!armasSeleccionables.includes(weapon)) {
-          return responderError(interaction, "Esa arma no está permitida para tu rol o para el nivel actual.");
-        }
-
-        if (accion === "anadir" && !tieneRol(interaction, config.ADD_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        if (accion === "quitar" && !tieneRol(interaction, config.REMOVE_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        return interaction.showModal(crearModalCantidadArma(accion, weapon));
-      }
-
-      if (interaction.customId.startsWith("selector_droga_")) {
-        const accion = interaction.customId.replace("selector_droga_", "");
-        const [drugId, stateId] = interaction.values[0].split("|");
-
-        if (!obtenerDroga(drugId) || !obtenerEstadoDroga(stateId)) {
-          return responderError(interaction, "Esa droga no existe en la configuración.");
-        }
-
-        if (accion === "anadir" && !tieneRol(interaction, config.ADD_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        if (accion === "quitar" && !tieneRol(interaction, config.REMOVE_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        return interaction.showModal(crearModalCantidadDroga(accion, drugId, stateId));
-      }
+      if (interaction.customId === `${PREFIX}:calc:items`) return manejarSelectorCalculadora(interaction);
     }
 
     if (interaction.isModalSubmit()) {
-      if (interaction.customId.startsWith("modal_arma_")) {
-        const [parteAccion, weapon] = interaction.customId.split("|");
-        const accion = parteAccion.replace("modal_arma_", "");
-        const cantidad = leerCantidad(interaction.fields.getTextInputValue("cantidad"));
-        const armasSeleccionables = armasSeleccionablesParaUsuario(interaction, accion);
+      const id = interaction.customId;
 
-        if (!cantidad) {
-          return responderError(interaction, "La cantidad debe ser un número entero mayor que 0.");
-        }
-
-        if (!config.WEAPONS.includes(weapon)) {
-          return responderError(interaction, "Esa arma no existe en la configuración.");
-        }
-
-        if (!armasSeleccionables.includes(weapon)) {
-          return responderError(interaction, "Esa arma no está permitida para tu rol o para el nivel actual.");
-        }
-
-        if (accion === "anadir" && !tieneRol(interaction, config.ADD_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        if (accion === "quitar" && !tieneRol(interaction, config.REMOVE_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        const data = cargarDatos();
-        const stockActual = data.weapons[weapon] || 0;
-
-        if (accion === "anadir") {
-          data.weapons[weapon] = stockActual + cantidad;
-          guardarDatos(data);
-          await actualizarPanel();
-          await enviarLogSimple(`➕ ${nombreUsuario(interaction)} añadió ${cantidad} ${weapon}. Stock ahora: ${data.weapons[weapon]}.`);
-
-          return responderOk(interaction, `Has añadido **${cantidad} ${weapon}**.`);
-        }
-
-        if (accion === "quitar") {
-          if (stockActual < cantidad) {
-            return responderError(
-              interaction,
-              `No hay suficiente stock de **${weapon}**.\nStock actual: **${stockActual}**.`
-            );
-          }
-
-          data.weapons[weapon] = stockActual - cantidad;
-          guardarDatos(data);
-          await actualizarPanel();
-          await enviarLogSimple(`➖ ${nombreUsuario(interaction)} quitó ${cantidad} ${weapon}. Stock ahora: ${data.weapons[weapon]}.`);
-
-          return responderOk(interaction, `Has quitado **${cantidad} ${weapon}**.`);
-        }
+      if (id === `${PREFIX}:modal:todos:rango`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const range = rangoDesdeHasta(
+          interaction.fields.getTextInputValue("desde"),
+          interaction.fields.getTextInputValue("hasta")
+        );
+        if (!range) return responderError(interaction, "Rango no válido. Usa YYYY-MM-DD.");
+        return consultarTodos(interaction, range);
       }
 
-      if (interaction.customId.startsWith("modal_droga_")) {
-        const [parteAccion, drugId, stateId] = interaction.customId.split("|");
-        const accion = parteAccion.replace("modal_droga_", "");
-        const cantidad = leerCantidad(interaction.fields.getTextInputValue("cantidad"));
-
-        if (!cantidad) {
-          return responderError(interaction, "La cantidad debe ser un número entero mayor que 0.");
+      if (id.startsWith(`${PREFIX}:modal:empleado:`)) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const tipo = id.replace(`${PREFIX}:modal:empleado:`, "");
+        let range = obtenerRangoPorTipo(tipo);
+        if (tipo === "rango") {
+          range = rangoDesdeHasta(
+            interaction.fields.getTextInputValue("desde"),
+            interaction.fields.getTextInputValue("hasta")
+          );
         }
-
-        if (!obtenerDroga(drugId) || !obtenerEstadoDroga(stateId)) {
-          return responderError(interaction, "Esa droga no existe en la configuración.");
-        }
-
-        if (accion === "anadir" && !tieneRol(interaction, config.ADD_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        if (accion === "quitar" && !tieneRol(interaction, config.REMOVE_WEAPON_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        const data = cargarDatos();
-        const stockActual = data.drugs[drugId][stateId] || 0;
-        const nombre = nombreDrogaCompleto(drugId, stateId);
-
-        if (accion === "anadir") {
-          data.drugs[drugId][stateId] = stockActual + cantidad;
-          guardarDatos(data);
-          await actualizarPanel();
-          await enviarLogSimple(`🧪 ${nombreUsuario(interaction)} añadió ${cantidad} ${nombre}. Stock ahora: ${data.drugs[drugId][stateId]}.`);
-
-          return responderOk(interaction, `Has añadido **${cantidad} ${nombre}**.`);
-        }
-
-        if (accion === "quitar") {
-          if (stockActual < cantidad) {
-            return responderError(
-              interaction,
-              `No hay suficiente stock de **${nombre}**.\nStock actual: **${stockActual}**.`
-            );
-          }
-
-          data.drugs[drugId][stateId] = stockActual - cantidad;
-          guardarDatos(data);
-          await actualizarPanel();
-          await enviarLogSimple(`🧫 ${nombreUsuario(interaction)} quitó ${cantidad} ${nombre}. Stock ahora: ${data.drugs[drugId][stateId]}.`);
-
-          return responderOk(interaction, `Has quitado **${cantidad} ${nombre}**.`);
-        }
+        if (!range) return responderError(interaction, "Rango no válido. Usa YYYY-MM-DD.");
+        return consultarEmpleado(interaction, interaction.fields.getTextInputValue("empleado"), range);
       }
 
-      if (interaction.customId.startsWith("modal_dinero_")) {
-        const accion = interaction.customId.replace("modal_dinero_", "");
-        const cantidad = leerCantidad(interaction.fields.getTextInputValue("cantidad"));
-
-        if (!cantidad) {
-          return responderError(interaction, "La cantidad debe ser un número entero mayor que 0.");
-        }
-
-        if (accion === "meter" && !tieneRol(interaction, config.ADD_MONEY_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        if (accion === "sacar" && !tieneRol(interaction, config.REMOVE_MONEY_ROLES)) {
-          return sinPermiso(interaction);
-        }
-
-        const data = cargarDatos();
-        const dineroActual = data.money || 0;
-
-        if (accion === "meter") {
-          data.money = dineroActual + cantidad;
-          guardarDatos(data);
-          await actualizarPanel();
-          await enviarLogSimple(`💰 ${nombreUsuario(interaction)} metió ${formatearDinero(cantidad)}. Dinero ahora: ${formatearDinero(data.money)}.`);
-
-          return responderOk(interaction, `Has metido **${formatearDinero(cantidad)}**.`);
-        }
-
-        if (accion === "sacar") {
-          if (dineroActual < cantidad) {
-            return responderError(
-              interaction,
-              `No hay suficiente dinero.\nDinero actual: **${formatearDinero(dineroActual)}**.`
-            );
-          }
-
-          data.money = dineroActual - cantidad;
-          guardarDatos(data);
-          await actualizarPanel();
-          await enviarLogSimple(`💸 ${nombreUsuario(interaction)} sacó ${formatearDinero(cantidad)}. Dinero ahora: ${formatearDinero(data.money)}.`);
-
-          return responderOk(interaction, `Has sacado **${formatearDinero(cantidad)}**.`);
-        }
+      if (id === `${PREFIX}:modal:modificar_horas`) {
+        return modificarHorasEmpleado(
+          interaction,
+          interaction.fields.getTextInputValue("empleado"),
+          interaction.fields.getTextInputValue("desde"),
+          interaction.fields.getTextInputValue("hasta"),
+          interaction.fields.getTextInputValue("horas"),
+          interaction.fields.getTextInputValue("motivo")
+        );
       }
+
+      if (id === `${PREFIX}:modal:postulacion`) return manejarPostulacion(interaction);
     }
   } catch (error) {
-    console.error(error);
-
-    const respuesta = respuestaPrivada({
-      content: "❌ Ha ocurrido un error al procesar la acción."
-    });
-
+    console.error("Error procesando interacción:", error);
+    const payload = respuestaPrivada({ content: "❌ Ha ocurrido un error al procesar la acción." });
     if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(respuesta).catch(() => {});
+      await interaction.followUp(payload).catch(() => {});
     } else {
-      await interaction.reply(respuesta).catch(() => {});
+      await interaction.reply(payload).catch(() => {});
     }
   }
 });
 
+process.on("unhandledRejection", error => {
+  console.error("Unhandled rejection:", error);
+});
+
+process.on("uncaughtException", error => {
+  console.error("Uncaught exception:", error);
+});
+
 if (!config.TOKEN) {
-  console.error("Falta el token. Crea la variable DISCORD_TOKEN en Railway.");
+  console.error("Falta DISCORD_TOKEN. Créalo en Railway > Variables.");
   process.exit(1);
 }
 

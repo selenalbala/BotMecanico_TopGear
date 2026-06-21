@@ -1,86 +1,103 @@
+function env(name, fallback = "") {
+  const value = process.env[name];
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  return String(value).trim();
+}
+
+function envList(name, fallback = "") {
+  return env(name, fallback)
+    .split(/[;,\s]+/g)
+    .map(value => value.trim())
+    .filter(Boolean);
+}
+
+function envBool(name, fallback = false) {
+  const value = env(name, "").toLowerCase();
+  if (!value) return fallback;
+  return ["1", "true", "yes", "si", "sí", "on"].includes(value);
+}
+
+function envNumber(name, fallback = 0) {
+  const value = Number(env(name, ""));
+  return Number.isFinite(value) ? value : fallback;
+}
+
+const DEFAULT_CALCULATOR_ITEMS = [
+  { id: "awd", label: "AWD", price: 10000 },
+  { id: "rwd", label: "RWD", price: 10000 },
+  { id: "fwd", label: "FWD", price: 10000 },
+  { id: "slick", label: "Slick", price: 6500 },
+  { id: "semi", label: "Semi", price: 5500 },
+  { id: "offroad", label: "Off-road", price: 5700 },
+  { id: "frenos_ceramicos", label: "Frenos cerámicos", price: 20000 },
+  { id: "suspension", label: "Suspensión", price: 6800 },
+  { id: "cosmeticos", label: "Cosméticos", price: 4000 },
+  { id: "pintura", label: "Pintura", price: 900 },
+  { id: "rines", label: "Rines", price: 10000 },
+  { id: "humo", label: "Humo", price: 5500 },
+  { id: "extras", label: "Extras", price: 7000 },
+  { id: "limpieza", label: "Limpieza", price: 600 },
+  { id: "reparacion", label: "Reparación", price: 800 },
+  { id: "rendimiento", label: "Rendimiento", price: 10000 },
+  { id: "turbo", label: "Turbo", price: 30000 },
+  { id: "v8", label: "V8", price: 50000 },
+  { id: "full", label: "Full", price: 116500 }
+];
+
+function getCalculatorItems() {
+  const raw = env("CALCULATOR_ITEMS_JSON", "");
+  if (!raw) return DEFAULT_CALCULATOR_ITEMS;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_CALCULATOR_ITEMS;
+
+    const normalized = parsed
+      .map(item => ({
+        id: String(item.id || item.label || "").trim().toLowerCase().replace(/[^a-z0-9_\-]/g, "_"),
+        label: String(item.label || item.id || "").trim(),
+        price: Number(item.price)
+      }))
+      .filter(item => item.id && item.label && Number.isFinite(item.price) && item.price >= 0)
+      .slice(0, 25);
+
+    return normalized.length ? normalized : DEFAULT_CALCULATOR_ITEMS;
+  } catch {
+    return DEFAULT_CALCULATOR_ITEMS;
+  }
+}
+
 module.exports = {
-  TOKEN: process.env.DISCORD_TOKEN || "",
+  TOKEN: env("DISCORD_TOKEN"),
+  GUILD_ID: env("GUILD_ID"),
+  TIMEZONE: env("TZ", env("TIMEZONE", "Europe/Madrid")),
+  DATA_DIR: env("DATA_DIR", env("STOCK_DATA_DIR", env("RAILWAY_VOLUME_MOUNT_PATH", ""))),
+  DATA_FILE: env("DATA_FILE"),
+  ADMIN_BYPASS: envBool("ADMIN_BYPASS", true),
+  WEEK_START: env("WEEK_START", "monday").toLowerCase(),
+  CURRENCY_SUFFIX: env("CURRENCY_SUFFIX", "$"),
 
-  // Canal donde está el panel principal del almacén.
-  CHANNEL_ID: process.env.CHANNEL_ID || "1509656133390827620",
-
-  // Canal donde se mandan los logs sencillos.
-  LOG_CHANNEL_ID: process.env.LOG_CHANNEL_ID || "1515320502217085018",
-
-  // Roles que pueden cambiar el nivel de mafia.
-  SET_MAFIA_LEVEL_ROLES: [
-    "1509341875729993842",
-    "1509343407527694407"
-  ],
-
-  // Roles superiores: pueden añadir, quitar y ver cualquier arma.
-  ADD_ANY_WEAPON_ROLES: [
-    "1509341875729993842",
-    "1509343407527694407"
-  ],
-
-  // Roles que pueden añadir armas.
-  // Estos mismos roles también pueden añadir droga.
-  ADD_WEAPON_ROLES: [
-    "1509341875729993842",
-    "1509343407527694407",
-    "1509345677753192519",
-    "1509344875865178285"
-  ],
-
-  // Roles que pueden quitar/sacar armas.
-  // Estos mismos roles también pueden quitar droga.
-  REMOVE_WEAPON_ROLES: [
-    "1509341875729993842",
-    "1509343407527694407",
-    "1509345677753192519"
-  ],
-
-  // Roles que pueden meter dinero.
-  ADD_MONEY_ROLES: [
-    "1509341875729993842",
-    "1509343407527694407"
-  ],
-
-  // Roles que pueden sacar dinero.
-  REMOVE_MONEY_ROLES: [
-    "1509341875729993842",
-    "1509343407527694407",
-    "1509345677753192519",
-    "1509344875865178285"
-  ],
-
-  WEAPONS: [
-    "SNS",
-    "9mm",
-    "Vintage",
-    "MK2",
-    "Mini-SMG",
-    "Micro-SMG",
-    "TEC",
-    "AK-recortada",
-    "AK-47",
-    "Francotirador"
-  ],
-
-  MAFIA_LEVEL_WEAPONS: {
-    1: ["SNS", "9mm", "Vintage", "MK2"],
-    2: ["SNS", "9mm", "Vintage", "MK2", "Mini-SMG", "Micro-SMG", "TEC"],
-    3: ["SNS", "9mm", "Vintage", "MK2", "Mini-SMG", "Micro-SMG", "TEC", "AK-recortada", "AK-47", "Francotirador"]
+  CHANNELS: {
+    FICHAJES: env("FICHAJES_CHANNEL_ID"),
+    PAGOS: env("PAGOS_CHANNEL_ID"),
+    CALCULADORA: env("CALCULADORA_CHANNEL_ID"),
+    POSTULANTES: env("POSTULANTES_CHANNEL_ID"),
+    LOGS: env("LOG_CHANNEL_ID")
   },
 
-  // Drogas del almacén.
-  DRUGS: [
-    { id: "coca", label: "Coca" },
-    { id: "heroina", label: "Heroína" },
-    { id: "meta", label: "Meta" }
-  ],
+  ROLES: {
+    ADMINS: envList("ADMIN_ROLE_IDS"),
+    MANAGERS: envList("MANAGER_ROLE_IDS"),
+    EMPLOYEES: envList("EMPLOYEE_ROLE_IDS"),
+    PAYMENTS: envList("PAYMENT_ROLE_IDS"),
+    APPLICATION_REVIEWERS: envList("APPLICATION_REVIEWER_ROLE_IDS")
+  },
 
-  // Estados posibles de cada droga.
-  DRUG_STATES: [
-    { id: "procesada", label: "Procesada" },
-    { id: "sin_procesar", label: "Sin procesar" }
-  ],
+  CALCULATOR_ITEMS: getCalculatorItems(),
+  CALCULATOR_DISCOUNTS: envList("CALCULATOR_DISCOUNTS", "0,5,10,15")
+    .map(Number)
+    .filter(value => Number.isFinite(value) && value >= 0 && value <= 100)
+    .slice(0, 25),
 
-  ADMIN_BYPASS: true
+  MAX_BACKUPS: envNumber("MAX_BACKUPS", 40)
 };
