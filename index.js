@@ -581,7 +581,7 @@ function crearEmbedPagos() {
 function crearBotonesPagos() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("Consultar empleado").setEmoji("📋").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("Consultar empleado").setEmoji("📋").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:modificar`).setLabel("Modificar horas").setEmoji("🛠️").setStyle(ButtonStyle.Secondary)
     )
   ];
@@ -638,7 +638,7 @@ function crearEmbedCalculadora() {
 function crearBotonesCalculadora() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("Abrir calculadora").setEmoji("🧮").setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("Abrir calculadora").setEmoji("🖩").setStyle(ButtonStyle.Success)
     )
   ];
 }
@@ -655,7 +655,7 @@ function crearEmbedPostulantes() {
 function crearBotonesPostulantes() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("Crear postulación").setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("🔧 Crear postulación").setStyle(ButtonStyle.Success)
     )
   ];
 }
