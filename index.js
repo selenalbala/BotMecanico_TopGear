@@ -8,6 +8,8 @@ const {
   ButtonStyle,
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
+  ChannelType,
+  PermissionFlagsBits,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -19,6 +21,8 @@ const {
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
+
+const calcSessions = new Map();
 
 process.env.TZ = config.TIMEZONE || process.env.TZ || "Europe/Madrid";
 
@@ -211,6 +215,42 @@ function puedeFichar(interaction) {
 
 function puedeGestionarPagos(interaction) {
   return tieneCualquierRol(interaction, [config.ROLES.PAYMENTS, config.ROLES.MANAGERS, config.ROLES.ADMINS]);
+}
+
+function rolesRevisoresPostulaciones() {
+  const ids = [
+    ...(config.ROLES.APPLICATION_REVIEWERS || []),
+    ...(config.ROLES.PAYMENTS || []),
+    ...(config.ROLES.MANAGERS || []),
+    ...(config.ROLES.ADMINS || [])
+  ];
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function rolesAceptarPostulacion() {
+  const configurados = config.ROLES.APPLICATION_ACCEPT || [];
+  if (configurados.length) return configurados.filter(Boolean);
+  // Fallback para que no se quede sin rol si no configuras APPLICATION_ACCEPT_ROLE_IDS.
+  return (config.ROLES.EMPLOYEES || []).slice(0, 1).filter(Boolean);
+}
+
+function puedeRevisarPostulaciones(interaction) {
+  return tieneCualquierRol(interaction, [
+    config.ROLES.APPLICATION_REVIEWERS,
+    config.ROLES.PAYMENTS,
+    config.ROLES.MANAGERS,
+    config.ROLES.ADMINS
+  ]);
+}
+
+function limpiarNombreCanal(texto) {
+  return String(texto || "postulacion")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || "postulacion";
 }
 
 function nombreMiembro(interaction) {
@@ -581,40 +621,60 @@ function crearEmbedPagos() {
 function crearBotonesPagos() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("Consultar empleado").setEmoji("📋").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("Consultar empleado").setEmoji("📋").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:modificar`).setLabel("Modificar horas").setEmoji("🛠️").setStyle(ButtonStyle.Secondary)
     )
   ];
 }
 
-function crearOpcionesConsultaPagos() {
-  return [
+function empleadosParaSelector(data) {
+  return obtenerIdsEmpleados(data)
+    .map(userId => ({
+      userId,
+      displayName: data.employees?.[userId]?.displayName || `Usuario ${userId}`
+    }))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
+}
+
+function crearSelectoresEmpleados(data, modo, placeholderBase) {
+  const empleados = empleadosParaSelector(data).slice(0, 100);
+  const rows = [];
+  for (let i = 0; i < empleados.length; i += 25) {
+    const chunk = empleados.slice(i, i + 25);
+    const parte = Math.floor(i / 25) + 1;
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`${PREFIX}:pagos:selectempleado:${modo}:${parte}`)
+          .setPlaceholder(empleados.length > 25 ? `${placeholderBase} · parte ${parte}` : placeholderBase)
+          .setMinValues(1)
+          .setMaxValues(1)
+          .addOptions(chunk.map(emp => ({
+            label: emp.displayName.slice(0, 100),
+            value: emp.userId,
+            description: `ID ${emp.userId}`.slice(0, 100)
+          })))
+      )
+    );
+  }
+  return rows;
+}
+
+function crearOpcionesConsultaPagos(data) {
+  const rows = [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:esta`).setLabel("Todos · esta semana").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:pasada`).setLabel("Todos · semana pasada").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:rango`).setLabel("Todos · rango").setStyle(ButtonStyle.Secondary)
-    ),
-    crearSelectorUsuario(`${PREFIX}:pagos:select:consultar`, "Selecciona un empleado para consultar"),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:modificar`).setLabel("Modificar horas empleado").setEmoji("🛠️").setStyle(ButtonStyle.Danger)
     )
   ];
+
+  rows.push(...crearSelectoresEmpleados(data, "consultar", "Selecciona empleado"));
+  return rows.slice(0, 5);
 }
 
-function crearSelectorUsuario(customId, placeholder) {
-  return new ActionRowBuilder().addComponents(
-    new UserSelectMenuBuilder()
-      .setCustomId(customId)
-      .setPlaceholder(placeholder)
-      .setMinValues(1)
-      .setMaxValues(1)
-  );
-}
-
-function crearSelectorModificarHoras() {
-  return [
-    crearSelectorUsuario(`${PREFIX}:pagos:select:modificar`, "Selecciona el empleado al que quieres modificar horas")
-  ];
+function crearSelectorModificarHoras(data) {
+  return crearSelectoresEmpleados(data, "modificar", "Selecciona empleado para modificar horas").slice(0, 5);
 }
 
 function crearOpcionesRangoEmpleado(userId) {
@@ -638,7 +698,9 @@ function crearEmbedCalculadora() {
 function crearBotonesCalculadora() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("Abrir calculadora").setEmoji("🧮").setStyle(ButtonStyle.Success)
+      // Discord a veces rechaza algunos unicode en setEmoji().
+      // Por eso el emote va dentro del texto del botón.
+      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("🧮 Calculadora").setStyle(ButtonStyle.Primary)
     )
   ];
 }
@@ -655,7 +717,7 @@ function crearEmbedPostulantes() {
 function crearBotonesPostulantes() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("🔧 Crear postulación").setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("Crear postulación").setStyle(ButtonStyle.Primary)
     )
   ];
 }
@@ -893,18 +955,64 @@ function crearModalPostulacion() {
     );
 }
 
-function crearSelectorCalculadora() {
+function crearVistaCalculadora(userId) {
   const items = config.CALCULATOR_ITEMS.slice(0, 25);
-  return [
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`${PREFIX}:calc:items`)
-        .setPlaceholder("Selecciona servicios")
-        .setMinValues(1)
-        .setMaxValues(items.length)
-        .addOptions(items.map(item => ({ label: `${item.label} · ${formatearDinero(item.price)}`, value: item.id })))
+  let session = calcSessions.get(userId);
+  if (!session) {
+    session = { selected: new Set(), discount: 0 };
+    calcSessions.set(userId, session);
+  }
+
+  const seleccionados = items.filter(item => session.selected.has(item.id));
+  const subtotal = seleccionados.reduce((acc, item) => acc + item.price, 0);
+  const total = Math.round(subtotal * (1 - (session.discount || 0) / 100));
+
+  const detalle = seleccionados.length
+    ? seleccionados.map(item => `• ${item.label}: **${formatearDinero(item.price)}**`).join("\n")
+    : "No hay servicios seleccionados.";
+
+  const embed = new EmbedBuilder()
+    .setColor(0xC01718)
+    .setTitle("🧮 Calculadora Top Gear")
+    .setDescription(limitarTexto(detalle, 1600))
+    .addFields(
+      { name: "Subtotal", value: `**${formatearDinero(subtotal)}**`, inline: true },
+      { name: "Descuento", value: `**${session.discount || 0}%**`, inline: true },
+      { name: "Total", value: `**${formatearDinero(total)}**`, inline: true }
     )
-  ];
+    .setFooter({ text: "Selecciona servicios y aplica descuento cuando haga falta" })
+    .setTimestamp();
+
+  const select = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`${PREFIX}:calc:items`)
+      .setPlaceholder("Añadir/quitar servicios")
+      .setMinValues(0)
+      .setMaxValues(Math.max(1, items.length))
+      .addOptions(items.map(item => ({
+        label: item.label.slice(0, 70),
+        description: formatearDinero(item.price).slice(0, 95),
+        value: item.id,
+        default: session.selected.has(item.id)
+      })))
+  );
+
+  const descuentos = (config.CALCULATOR_DISCOUNTS.length ? config.CALCULATOR_DISCOUNTS : [0, 5, 10, 15]).slice(0, 4);
+  const rowDescuentos = new ActionRowBuilder().addComponents(
+    ...descuentos.map(discount =>
+      new ButtonBuilder()
+        .setCustomId(`${PREFIX}:calc:descuento:${discount}`)
+        .setLabel(`${discount}%`)
+        .setStyle(session.discount === discount ? ButtonStyle.Success : ButtonStyle.Secondary)
+    ),
+    new ButtonBuilder().setCustomId(`${PREFIX}:calc:limpiar`).setLabel("Limpiar").setStyle(ButtonStyle.Danger)
+  );
+
+  return { embeds: [embed], components: [select, rowDescuentos] };
+}
+
+function crearSelectorCalculadora() {
+  return crearVistaCalculadora("preview").components;
 }
 
 async function registrarComandos() {
@@ -1117,80 +1225,218 @@ async function manejarComandoSetHoras(interaction) {
 }
 
 async function manejarCalculadora(interaction) {
-  return interaction.reply(respuestaPrivada({
-    content: "Selecciona los servicios a calcular:",
-    components: crearSelectorCalculadora()
-  }));
+  calcSessions.set(interaction.user.id, { selected: new Set(), discount: 0 });
+  return interaction.reply(respuestaPrivada(crearVistaCalculadora(interaction.user.id)));
 }
 
 async function manejarSelectorCalculadora(interaction) {
-  const ids = interaction.values || [];
-  const seleccionados = config.CALCULATOR_ITEMS.filter(item => ids.includes(item.id));
-  const subtotal = seleccionados.reduce((acc, item) => acc + item.price, 0);
-  const lineas = seleccionados.map(item => `• ${item.label}: **${formatearDinero(item.price)}**`).join("\n");
-  const descuentos = config.CALCULATOR_DISCOUNTS.length ? config.CALCULATOR_DISCOUNTS : [0, 5, 10, 15];
-  const textoDescuentos = descuentos.map(discount => {
-    const total = Math.round(subtotal * (1 - discount / 100));
-    return `• ${discount}%: **${formatearDinero(total)}**`;
-  }).join("\n");
+  const session = calcSessions.get(interaction.user.id) || { selected: new Set(), discount: 0 };
+  session.selected = new Set(interaction.values || []);
+  calcSessions.set(interaction.user.id, session);
+  return interaction.update(crearVistaCalculadora(interaction.user.id));
+}
 
-  const embed = new EmbedBuilder()
+async function manejarBotonCalculadora(interaction, id) {
+  const session = calcSessions.get(interaction.user.id) || { selected: new Set(), discount: 0 };
+  if (id === `${PREFIX}:calc:limpiar`) {
+    session.selected = new Set();
+    session.discount = 0;
+  } else if (id.startsWith(`${PREFIX}:calc:descuento:`)) {
+    const value = Number(id.replace(`${PREFIX}:calc:descuento:`, ""));
+    session.discount = Number.isFinite(value) ? value : 0;
+  }
+  calcSessions.set(interaction.user.id, session);
+  return interaction.update(crearVistaCalculadora(interaction.user.id));
+}
+
+function crearEmbedPostulacion(app) {
+  return new EmbedBuilder()
     .setColor(0xC01718)
-    .setTitle("Calculadora Top Gear")
-    .setDescription(lineas || "Sin servicios seleccionados.")
+    .setTitle("🏁 Nueva postulación Top Gear")
+    .setDescription(`Usuario: <@${app.userId}>`)
     .addFields(
-      { name: "Subtotal", value: `**${formatearDinero(subtotal)}**`, inline: true },
-      { name: "Con descuentos", value: textoDescuentos || "Sin descuentos configurados.", inline: false }
+      { name: "Nombre IC", value: app.nombreIc || "-", inline: true },
+      { name: "Nombre OOC", value: app.nombreOoc || "-", inline: true },
+      { name: "Edad OOC", value: app.edad || "-", inline: true },
+      { name: "Horario", value: app.horario || "-", inline: false },
+      { name: "Experiencia", value: limitarTexto(app.experiencia || "-", 900), inline: false },
+      { name: "Estado", value: app.status || "pendiente", inline: true }
     )
-    .setTimestamp();
+    .setTimestamp(new Date(app.createdAt || Date.now()));
+}
 
-  return interaction.reply(respuestaPrivada({ embeds: [embed] }));
+function crearBotonesRevisionPostulacion(appId, disabled = false) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:app:aceptar:${appId}`).setLabel("Aceptar").setStyle(ButtonStyle.Success).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`${PREFIX}:app:denegar:${appId}`).setLabel("Denegar").setStyle(ButtonStyle.Danger).setDisabled(disabled)
+    )
+  ];
+}
+
+async function obtenerCategoriaPostulaciones(interaction) {
+  if (config.CHANNELS.APPLICATION_CATEGORY) return config.CHANNELS.APPLICATION_CATEGORY;
+  try {
+    const canalPostulantes = config.CHANNELS.POSTULANTES
+      ? await client.channels.fetch(config.CHANNELS.POSTULANTES).catch(() => null)
+      : null;
+    return canalPostulantes?.parentId || null;
+  } catch {
+    return null;
+  }
+}
+
+async function crearCanalTicketPostulacion(interaction, app) {
+  const guild = interaction.guild;
+  if (!guild) throw new Error("No se encontró el servidor de Discord.");
+
+  const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  if (!me?.permissions?.has(PermissionsBitField.Flags.ManageChannels)) {
+    throw new Error("Al bot le falta el permiso Gestionar canales para crear tickets de postulación.");
+  }
+
+  const reviewerRoles = rolesRevisoresPostulaciones();
+  const overwrites = [
+    {
+      id: guild.roles.everyone.id,
+      deny: [PermissionFlagsBits.ViewChannel]
+    },
+    {
+      id: app.userId,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+    },
+    {
+      id: client.user.id,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels]
+    },
+    ...reviewerRoles.map(roleId => ({
+      id: roleId,
+      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+    }))
+  ];
+
+  const parent = await obtenerCategoriaPostulaciones(interaction);
+  const channel = await guild.channels.create({
+    name: `${config.APPLICATION_TICKET_PREFIX || "postulacion"}-${limpiarNombreCanal(app.nombreIc)}-${String(app.userId).slice(-4)}`.slice(0, 95),
+    type: ChannelType.GuildText,
+    parent: parent || undefined,
+    permissionOverwrites: overwrites,
+    topic: `Postulación Top Gear de ${app.displayName} · ${app.userId}`
+  });
+
+  const pingRevisores = reviewerRoles.length ? reviewerRoles.map(id => `<@&${id}>`).join(" ") : "";
+  const mensaje = await channel.send({
+    content: `${pingRevisores}\nPostulación de <@${app.userId}>`.trim(),
+    embeds: [crearEmbedPostulacion(app)],
+    components: crearBotonesRevisionPostulacion(app.id)
+  });
+
+  return { channel, message: mensaje };
 }
 
 async function manejarPostulacion(interaction) {
   const data = cargarDatos();
   const id = generarId("app");
-  const values = {
+  const app = {
+    id,
+    userId: interaction.user.id,
+    displayName: nombreMiembro(interaction),
     nombreIc: interaction.fields.getTextInputValue("nombre_ic"),
     nombreOoc: interaction.fields.getTextInputValue("nombre_ooc"),
     edad: interaction.fields.getTextInputValue("edad"),
     experiencia: interaction.fields.getTextInputValue("experiencia"),
-    horario: interaction.fields.getTextInputValue("horario")
-  };
-
-  data.applications[id] = {
-    id,
-    userId: interaction.user.id,
-    displayName: nombreMiembro(interaction),
-    ...values,
+    horario: interaction.fields.getTextInputValue("horario"),
+    status: "pendiente",
     createdAt: new Date().toISOString()
   };
-  guardarDatos(data);
 
-  const embed = new EmbedBuilder()
-    .setColor(0xC01718)
-    .setTitle("Nueva postulación Top Gear")
-    .setDescription(`Usuario: <@${interaction.user.id}>`)
-    .addFields(
-      { name: "Nombre IC", value: values.nombreIc, inline: true },
-      { name: "Nombre OOC", value: values.nombreOoc, inline: true },
-      { name: "Edad", value: values.edad, inline: true },
-      { name: "Horario", value: values.horario, inline: false },
-      { name: "Experiencia", value: limitarTexto(values.experiencia, 900), inline: false }
-    )
-    .setTimestamp();
+  data.applications[id] = app;
 
-  if (config.CHANNELS.LOGS) {
+  try {
+    const { channel, message } = await crearCanalTicketPostulacion(interaction, app);
+    app.ticketChannelId = channel.id;
+    app.ticketMessageId = message.id;
+    data.applications[id] = app;
+    touchEmpleado(data, app.userId, app.nombreIc || app.displayName);
+    guardarDatos(data);
+
+    await enviarLog(`📨 **Nueva postulación** · ${app.nombreIc} (<@${app.userId}>) · Ticket: <#${channel.id}>`);
+    return responderOk(interaction, `Postulación creada correctamente: <#${channel.id}>`);
+  } catch (error) {
+    data.applications[id] = app;
+    guardarDatos(data);
+    console.error("No se pudo crear el ticket de postulación:", error.message);
+
+    if (config.CHANNELS.LOGS) {
+      const logChannel = await client.channels.fetch(config.CHANNELS.LOGS).catch(() => null);
+      if (logChannel?.isTextBased()) {
+        await logChannel.send({
+          content: `⚠️ No se pudo crear ticket de postulación: ${error.message}`,
+          embeds: [crearEmbedPostulacion(app)],
+          components: crearBotonesRevisionPostulacion(app.id)
+        }).catch(() => {});
+      }
+    }
+
+    return responderError(interaction, `No se pudo crear el ticket de postulación. Revisa permisos del bot: ${error.message}`);
+  }
+}
+
+async function manejarDecisionPostulacion(interaction, appId, accion) {
+  if (!puedeRevisarPostulaciones(interaction)) return sinPermiso(interaction);
+
+  const data = cargarDatos();
+  const app = data.applications?.[appId];
+  if (!app) return responderError(interaction, "No encontré esta postulación en el archivo de datos.");
+  if (app.status && app.status !== "pendiente") return responderError(interaction, `Esta postulación ya está marcada como ${app.status}.`);
+
+  const aceptada = accion === "aceptar";
+  app.status = aceptada ? "aceptada" : "denegada";
+  app.reviewedAt = new Date().toISOString();
+  app.reviewedBy = interaction.user.id;
+  app.reviewedByName = nombreMiembro(interaction);
+
+  let detalleRoles = "";
+  if (aceptada) {
+    const roleIds = rolesAceptarPostulacion();
     try {
-      const channel = await client.channels.fetch(config.CHANNELS.LOGS);
-      if (channel?.isTextBased()) await channel.send({ embeds: [embed] });
+      const member = await interaction.guild.members.fetch(app.userId);
+      for (const roleId of roleIds) {
+        await member.roles.add(roleId).catch(error => {
+          detalleRoles += `\n⚠️ No pude asignar <@&${roleId}>: ${error.message}`;
+        });
+      }
+      if (config.APPLICATION_CHANGE_NICKNAME && app.nombreIc) {
+        await member.setNickname(app.nombreIc).catch(error => {
+          detalleRoles += `\n⚠️ No pude cambiar el apodo: ${error.message}`;
+        });
+      }
+      touchEmpleado(data, app.userId, app.nombreIc || app.displayName);
     } catch (error) {
-      console.error("No se pudo mandar la postulación a logs:", error.message);
+      detalleRoles += `\n⚠️ No pude encontrar/asignar al usuario: ${error.message}`;
+    }
+
+    if (!roleIds.length) {
+      detalleRoles += "\n⚠️ No hay APPLICATION_ACCEPT_ROLE_IDS configurado. No se asignó rol.";
     }
   }
 
-  return responderOk(interaction, "Postulación enviada correctamente.");
+  data.applications[appId] = app;
+  guardarDatos(data);
+
+  const texto = aceptada
+    ? `✅ Postulación aceptada por ${nombreMiembro(interaction)}.${detalleRoles}`
+    : `❌ Postulación denegada por ${nombreMiembro(interaction)}.`;
+
+  await interaction.update({ components: crearBotonesRevisionPostulacion(appId, true) }).catch(() => {});
+  await interaction.followUp({ content: texto }).catch(() => {});
+  await enviarLog(`${aceptada ? "✅" : "❌"} **Postulación ${app.status}** · ${app.nombreIc} (<@${app.userId}>) · Por ${nombreMiembro(interaction)}${detalleRoles}`);
+
+  if (config.APPLICATION_DELETE_TICKET_ON_DECISION && interaction.channel?.deletable) {
+    setTimeout(() => interaction.channel.delete(`Postulación ${app.status}`).catch(() => {}), 8000);
+  }
 }
+
 
 client.once(Events.ClientReady, async () => {
   logDatos();
@@ -1243,17 +1489,25 @@ client.on(Events.InteractionCreate, async interaction => {
 
       if (id === `${PREFIX}:pagos:consultar`) {
         if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const data = cargarDatos();
+        const components = crearOpcionesConsultaPagos(data);
         return interaction.reply(respuestaPrivada({
-          content: "Elige qué quieres consultar:",
-          components: crearOpcionesConsultaPagos()
+          content: empleadosParaSelector(data).length
+            ? "Elige qué quieres consultar:"
+            : "No hay empleados registrados todavía. Cuando alguien fiche entrada o sea aceptado, aparecerá aquí.",
+          components
         }));
       }
 
       if (id === `${PREFIX}:pagos:modificar`) {
         if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const data = cargarDatos();
+        const components = crearSelectorModificarHoras(data);
         return interaction.reply(respuestaPrivada({
-          content: "Selecciona el empleado al que quieres modificar horas:",
-          components: crearSelectorModificarHoras()
+          content: components.length
+            ? "Selecciona el empleado al que quieres modificar horas:"
+            : "No hay empleados registrados todavía. Cuando alguien fiche entrada o sea aceptado, aparecerá aquí.",
+          components
         }));
       }
 
@@ -1288,7 +1542,16 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       if (id === `${PREFIX}:calc:abrir`) return manejarCalculadora(interaction);
+      if (id === `${PREFIX}:calc:limpiar` || id.startsWith(`${PREFIX}:calc:descuento:`)) return manejarBotonCalculadora(interaction, id);
       if (id === `${PREFIX}:postular:abrir`) return interaction.showModal(crearModalPostulacion());
+
+      if (id.startsWith(`${PREFIX}:app:aceptar:`)) {
+        return manejarDecisionPostulacion(interaction, id.replace(`${PREFIX}:app:aceptar:`, ""), "aceptar");
+      }
+
+      if (id.startsWith(`${PREFIX}:app:denegar:`)) {
+        return manejarDecisionPostulacion(interaction, id.replace(`${PREFIX}:app:denegar:`, ""), "denegar");
+      }
     }
 
     if (interaction.isUserSelectMenu?.()) {
@@ -1320,6 +1583,23 @@ client.on(Events.InteractionCreate, async interaction => {
 
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === `${PREFIX}:calc:items`) return manejarSelectorCalculadora(interaction);
+
+      if (interaction.customId.startsWith(`${PREFIX}:pagos:selectempleado:consultar:`)) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const userId = interaction.values?.[0];
+        if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        return interaction.reply(respuestaPrivada({
+          content: `Empleado seleccionado: <@${userId}>. Elige el periodo:`,
+          components: crearOpcionesRangoEmpleado(userId)
+        }));
+      }
+
+      if (interaction.customId.startsWith(`${PREFIX}:pagos:selectempleado:modificar:`)) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const userId = interaction.values?.[0];
+        if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        return interaction.showModal(crearModalModificarHorasEmpleado(userId));
+      }
     }
 
     if (interaction.isModalSubmit()) {
