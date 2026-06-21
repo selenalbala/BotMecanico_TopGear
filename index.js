@@ -234,10 +234,36 @@ function recopilarLegacyRecords(raw) {
     }
   }
 
+  // Formato antiguo del bot de fichajes:
+  // { guilds: { "guildId": { "userId": [ { entrada, salida }, ... ] } } }
+  if (raw.guilds && typeof raw.guilds === "object" && !Array.isArray(raw.guilds)) {
+    for (const [guildId, guildObj] of Object.entries(raw.guilds)) {
+      if (!guildObj || typeof guildObj !== "object" || Array.isArray(guildObj)) continue;
+
+      for (const [userId, value] of Object.entries(guildObj)) {
+        if (!/^\d{17,20}$/.test(userId)) continue;
+
+        const fallback = { guildId, userId, displayName: `Usuario ${userId}` };
+
+        if (Array.isArray(value)) {
+          for (const item of value) addRecord(item, fallback);
+        } else if (value && typeof value === "object") {
+          walkUserObject(userId, value);
+          if (legacyStart(value)) addRecord(value, fallback);
+        }
+      }
+    }
+  }
+
   // Formato común: { "123456789...": { nombre, fichajes: [...] }, ... }
+  // y también { "123456789...": [ { entrada, salida }, ... ] }.
   for (const [key, value] of Object.entries(raw)) {
-    if (/^\d{17,20}$/.test(key) && value && typeof value === "object") {
-      walkUserObject(key, value);
+    if (/^\d{17,20}$/.test(key)) {
+      if (Array.isArray(value)) {
+        for (const item of value) addRecord(item, { userId: key, displayName: `Usuario ${key}` });
+      } else if (value && typeof value === "object") {
+        walkUserObject(key, value);
+      }
     }
   }
 
@@ -253,8 +279,8 @@ function importarFichajesLegacySiExiste(data) {
     if (!fs.existsSync(LEGACY_FICHAJES_FILE)) return data;
 
     const stat = fs.statSync(LEGACY_FICHAJES_FILE);
-    const migrationKey = `fichajes.json:${stat.mtimeMs}:${stat.size}`;
-    if (data.migrations?.legacyFichajesJsonKey === migrationKey) return data;
+    const migrationKey = `fichajes.json.v2:${stat.mtimeMs}:${stat.size}`;
+    if (data.migrations?.legacyFichajesJsonV2Key === migrationKey) return data;
 
     const contenido = fs.readFileSync(LEGACY_FICHAJES_FILE, "utf8").trim();
     if (!contenido) return data;
@@ -307,6 +333,7 @@ function importarFichajesLegacySiExiste(data) {
       }
     }
 
+    data.migrations.legacyFichajesJsonV2Key = migrationKey;
     data.migrations.legacyFichajesJsonKey = migrationKey;
     data.migrations.legacyFichajesJsonImportedAt = new Date().toISOString();
     data.migrations.legacyFichajesJsonImportedEntries = importados;
