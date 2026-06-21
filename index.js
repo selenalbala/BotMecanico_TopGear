@@ -7,6 +7,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   StringSelectMenuBuilder,
+  UserSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -543,8 +544,9 @@ async function sinPermiso(interaction) {
 function crearEmbedFichajes() {
   return new EmbedBuilder()
     .setColor(0xC01718)
-    .setTitle("Top Gear | Fichajes")
-    .setDescription("Ficha tu **entrada** y **salida** desde este panel. También puedes consultar tus horas de esta semana y la semana pasada.")
+    .setTitle("🕒 Fichajes Top Gear")
+    .setDescription("Ficha tu entrada y salida. También puedes consultar tus horas por semana.")
+    .setFooter({ text: "Top Gear · Control de horas" })
     .setTimestamp();
 }
 
@@ -554,6 +556,16 @@ function crearBotonesFichajes() {
       new ButtonBuilder().setCustomId(`${PREFIX}:ficha:entrada`).setLabel("Entrada").setEmoji("🟢").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`${PREFIX}:ficha:salida`).setLabel("Salida").setEmoji("🔴").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras`).setLabel("Mis horas").setEmoji("⏱️").setStyle(ButtonStyle.Secondary)
+    )
+  ];
+}
+
+function crearOpcionesMisHoras() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:esta`).setLabel("Esta semana").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:pasada`).setLabel("Semana pasada").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:rango`).setLabel("Elegir fechas").setStyle(ButtonStyle.Secondary)
     )
   ];
 }
@@ -582,13 +594,35 @@ function crearOpcionesConsultaPagos() {
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:pasada`).setLabel("Todos · semana pasada").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:rango`).setLabel("Todos · rango").setStyle(ButtonStyle.Secondary)
     ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:empleado:esta`).setLabel("Empleado · esta semana").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:empleado:pasada`).setLabel("Empleado · semana pasada").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:empleado:rango`).setLabel("Empleado · rango").setStyle(ButtonStyle.Secondary)
-    ),
+    crearSelectorUsuario(`${PREFIX}:pagos:select:consultar`, "Selecciona un empleado para consultar"),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:modificar`).setLabel("Modificar horas empleado").setEmoji("🛠️").setStyle(ButtonStyle.Danger)
+    )
+  ];
+}
+
+function crearSelectorUsuario(customId, placeholder) {
+  return new ActionRowBuilder().addComponents(
+    new UserSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .setMinValues(1)
+      .setMaxValues(1)
+  );
+}
+
+function crearSelectorModificarHoras() {
+  return [
+    crearSelectorUsuario(`${PREFIX}:pagos:select:modificar`, "Selecciona el empleado al que quieres modificar horas")
+  ];
+}
+
+function crearOpcionesRangoEmpleado(userId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:esta`).setLabel("Esta semana").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:pasada`).setLabel("Semana pasada").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:rango`).setLabel("Elegir fechas").setStyle(ButtonStyle.Secondary)
     )
   ];
 }
@@ -612,15 +646,16 @@ function crearBotonesCalculadora() {
 function crearEmbedPostulantes() {
   return new EmbedBuilder()
     .setColor(0xC01718)
-    .setTitle("Top Gear | Postulaciones")
-    .setDescription("Pulsa el botón para enviar tu postulación al equipo de Top Gear.")
+    .setTitle("🏁 Postulaciones Top Gear")
+    .setDescription(`¿Quieres unirte al taller?\n\nPulsa el botón de abajo y completa tu solicitud.\n\n🔧 La postulación será revisada por el equipo encargado.`)
+    .setFooter({ text: "Top Gear · Sistema de postulaciones" })
     .setTimestamp();
 }
 
 function crearBotonesPostulantes() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("Postularse").setEmoji("📝").setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("Crear postulación").setStyle(ButtonStyle.Primary)
     )
   ];
 }
@@ -628,7 +663,7 @@ function crearBotonesPostulantes() {
 function panelPayload(key) {
   if (key === "fichajes") return { embeds: [crearEmbedFichajes()], components: crearBotonesFichajes() };
   if (key === "pagos") return { embeds: [crearEmbedPagos()], components: crearBotonesPagos() };
-  if (key === "calculadora") return { embeds: [crearEmbedCalculadora()], components: crearBotonesCalculadora() };
+  if (key === "calculadora") return { content: "", embeds: [], components: crearBotonesCalculadora() };
   if (key === "postulantes") return { embeds: [crearEmbedPostulantes()], components: crearBotonesPostulantes() };
   return null;
 }
@@ -738,6 +773,34 @@ function crearModalRangoTodos() {
     );
 }
 
+function crearModalMisHorasRango() {
+  return new ModalBuilder()
+    .setCustomId(`${PREFIX}:modal:mishoras:rango`)
+    .setTitle("Mis horas por fechas")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("desde").setLabel("Desde (YYYY-MM-DD)").setPlaceholder(formatDate(startOfWeek(new Date()))).setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("hasta").setLabel("Hasta (YYYY-MM-DD)").setPlaceholder(formatDate(new Date())).setStyle(TextInputStyle.Short).setRequired(true)
+      )
+    );
+}
+
+function crearModalRangoEmpleadoSeleccionado(userId) {
+  return new ModalBuilder()
+    .setCustomId(`${PREFIX}:modal:empleado_rango:${userId}`)
+    .setTitle("Consultar empleado por fechas")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("desde").setLabel("Desde (YYYY-MM-DD)").setPlaceholder(formatDate(startOfWeek(new Date()))).setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("hasta").setLabel("Hasta (YYYY-MM-DD)").setPlaceholder(formatDate(new Date())).setStyle(TextInputStyle.Short).setRequired(true)
+      )
+    );
+}
+
 function crearModalEmpleado(tipoRango) {
   const modal = new ModalBuilder()
     .setCustomId(`${PREFIX}:modal:empleado:${tipoRango}`)
@@ -771,6 +834,27 @@ function crearModalModificarHoras() {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("empleado").setLabel("Empleado: mención, ID o nombre").setPlaceholder("@Empleado o 123456789...").setStyle(TextInputStyle.Short).setRequired(true)
       ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("desde").setLabel("Desde (YYYY-MM-DD)").setPlaceholder(today).setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("hasta").setLabel("Hasta (YYYY-MM-DD)").setPlaceholder(today).setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("horas").setLabel("Total exacto que debe quedar").setPlaceholder("Ejemplo: 8, 7.5 o 07:30").setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("motivo").setLabel("Motivo / nota").setPlaceholder("Corrección manual").setStyle(TextInputStyle.Short).setRequired(false)
+      )
+    );
+}
+
+function crearModalModificarHorasEmpleado(userId) {
+  const today = formatDate(new Date());
+  return new ModalBuilder()
+    .setCustomId(`${PREFIX}:modal:modificar_horas:${userId}`)
+    .setTitle("Modificar horas empleado")
+    .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("desde").setLabel("Desde (YYYY-MM-DD)").setPlaceholder(today).setStyle(TextInputStyle.Short).setRequired(true)
       ),
@@ -926,10 +1010,19 @@ async function manejarMisHoras(interaction) {
   guardarDatos(data);
 
   return interaction.reply(respuestaPrivada({
-    embeds: [
-      embedEmpleado(data, userId, rangoEstaSemana(), "Mis horas · esta semana"),
-      embedEmpleado(data, userId, rangoSemanaPasada(), "Mis horas · semana pasada")
-    ]
+    content: "Elige qué horas quieres consultar:",
+    components: crearOpcionesMisHoras()
+  }));
+}
+
+async function consultarMisHoras(interaction, range) {
+  const data = cargarDatos();
+  const userId = interaction.user.id;
+  touchEmpleado(data, userId, nombreMiembro(interaction));
+  guardarDatos(data);
+
+  return interaction.reply(respuestaPrivada({
+    embeds: [embedEmpleado(data, userId, range, `Mis horas · ${range.label}`)]
   }));
 }
 
@@ -1132,6 +1225,21 @@ client.on(Events.InteractionCreate, async interaction => {
       if (id === `${PREFIX}:ficha:entrada`) return manejarEntrada(interaction);
       if (id === `${PREFIX}:ficha:salida`) return manejarSalida(interaction);
       if (id === `${PREFIX}:ficha:mishoras`) return manejarMisHoras(interaction);
+      if (id === `${PREFIX}:ficha:mishoras:esta`) return consultarMisHoras(interaction, rangoEstaSemana());
+      if (id === `${PREFIX}:ficha:mishoras:pasada`) return consultarMisHoras(interaction, rangoSemanaPasada());
+      if (id === `${PREFIX}:ficha:mishoras:rango`) return interaction.showModal(crearModalMisHorasRango());
+
+      if (id.startsWith(`${PREFIX}:pagos:emp:`)) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const partes = id.split(":");
+        const userId = partes[3];
+        const tipo = partes[4];
+        if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        if (tipo === "rango") return interaction.showModal(crearModalRangoEmpleadoSeleccionado(userId));
+        const range = obtenerRangoPorTipo(tipo);
+        if (!range) return responderError(interaction, "Rango no válido.");
+        return consultarEmpleado(interaction, userId, range);
+      }
 
       if (id === `${PREFIX}:pagos:consultar`) {
         if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
@@ -1143,7 +1251,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
       if (id === `${PREFIX}:pagos:modificar`) {
         if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
-        return interaction.showModal(crearModalModificarHoras());
+        return interaction.reply(respuestaPrivada({
+          content: "Selecciona el empleado al que quieres modificar horas:",
+          components: crearSelectorModificarHoras()
+        }));
       }
 
       if (id === `${PREFIX}:pagos:todos:esta`) {
@@ -1180,12 +1291,60 @@ client.on(Events.InteractionCreate, async interaction => {
       if (id === `${PREFIX}:postular:abrir`) return interaction.showModal(crearModalPostulacion());
     }
 
+    if (interaction.isUserSelectMenu?.()) {
+      if (interaction.customId === `${PREFIX}:pagos:select:consultar`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const userId = interaction.values?.[0];
+        if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        const data = cargarDatos();
+        let displayName = data.employees?.[userId]?.displayName || `Usuario ${userId}`;
+        try {
+          const member = await interaction.guild?.members.fetch(userId);
+          if (member?.displayName) displayName = member.displayName;
+        } catch {}
+        touchEmpleado(data, userId, displayName);
+        guardarDatos(data);
+        return interaction.reply(respuestaPrivada({
+          content: `Empleado seleccionado: <@${userId}>. Elige el periodo:`,
+          components: crearOpcionesRangoEmpleado(userId)
+        }));
+      }
+
+      if (interaction.customId === `${PREFIX}:pagos:select:modificar`) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const userId = interaction.values?.[0];
+        if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        return interaction.showModal(crearModalModificarHorasEmpleado(userId));
+      }
+    }
+
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === `${PREFIX}:calc:items`) return manejarSelectorCalculadora(interaction);
     }
 
     if (interaction.isModalSubmit()) {
       const id = interaction.customId;
+
+      if (id === `${PREFIX}:modal:mishoras:rango`) {
+        const range = rangoDesdeHasta(
+          interaction.fields.getTextInputValue("desde"),
+          interaction.fields.getTextInputValue("hasta")
+        );
+        if (!range) return responderError(interaction, "Rango no válido. Usa YYYY-MM-DD.");
+        return consultarMisHoras(interaction, range);
+      }
+
+      if (id.startsWith(`${PREFIX}:modal:empleado_rango:`)) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const userId = id.replace(`${PREFIX}:modal:empleado_rango:`, "");
+        if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        const range = rangoDesdeHasta(
+          interaction.fields.getTextInputValue("desde"),
+          interaction.fields.getTextInputValue("hasta")
+        );
+        if (!range) return responderError(interaction, "Rango no válido. Usa YYYY-MM-DD.");
+        return consultarEmpleado(interaction, userId, range);
+      }
 
       if (id === `${PREFIX}:modal:todos:rango`) {
         if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
@@ -1209,6 +1368,19 @@ client.on(Events.InteractionCreate, async interaction => {
         }
         if (!range) return responderError(interaction, "Rango no válido. Usa YYYY-MM-DD.");
         return consultarEmpleado(interaction, interaction.fields.getTextInputValue("empleado"), range);
+      }
+
+      if (id.startsWith(`${PREFIX}:modal:modificar_horas:`)) {
+        const userId = id.replace(`${PREFIX}:modal:modificar_horas:`, "");
+        if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        return modificarHorasEmpleado(
+          interaction,
+          userId,
+          interaction.fields.getTextInputValue("desde"),
+          interaction.fields.getTextInputValue("hasta"),
+          interaction.fields.getTextInputValue("horas"),
+          interaction.fields.getTextInputValue("motivo")
+        );
       }
 
       if (id === `${PREFIX}:modal:modificar_horas`) {
