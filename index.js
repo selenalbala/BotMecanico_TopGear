@@ -60,6 +60,7 @@ function elegirDataDir() {
 const DATA_DIR = elegirDataDir();
 const DATA_FILE = config.DATA_FILE ? path.resolve(config.DATA_FILE) : path.join(DATA_DIR, DATA_FILE_NAME);
 const BACKUP_DIR = path.join(path.dirname(DATA_FILE), "backups");
+const LEGACY_FICHAJES_FILE = path.join(path.dirname(DATA_FILE), "fichajes.json");
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMembers],
@@ -99,22 +100,243 @@ function normalizarDatos(data) {
   data.employees = data.employees && typeof data.employees === "object" ? data.employees : {};
   data.applications = data.applications && typeof data.applications === "object" ? data.applications : {};
   data.formerMembers = data.formerMembers && typeof data.formerMembers === "object" ? data.formerMembers : {};
+  data.migrations = data.migrations && typeof data.migrations === "object" ? data.migrations : {};
   if (!data.createdAt) data.createdAt = new Date().toISOString();
   data.updatedAt = new Date().toISOString();
+  return data;
+}
+
+
+function parseLegacyDate(value) {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const text = String(value).trim();
+  if (!text) return null;
+
+  const direct = new Date(text);
+  if (!Number.isNaN(direct.getTime())) return direct;
+
+  const match = text.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (match) {
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    let year = Number(match[3]);
+    if (year < 100) year += 2000;
+    const hour = Number(match[4] || 0);
+    const minute = Number(match[5] || 0);
+    const second = Number(match[6] || 0);
+    const date = new Date(year, month - 1, day, hour, minute, second, 0);
+    if (!Number.isNaN(date.getTime())) return date;
+  }
+
+  return null;
+}
+
+function firstDefined(obj, keys) {
+  if (!obj || typeof obj !== "object") return undefined;
+  for (const key of keys) {
+    if (obj[key] !== undefined && obj[key] !== null && obj[key] !== "") return obj[key];
+  }
+  return undefined;
+}
+
+function legacyUserId(record, fallbackUserId = null) {
+  const raw = firstDefined(record, ["userId", "usuarioId", "discordId", "idDiscord", "memberId", "empleadoId", "id", "usuario"]);
+  const text = raw !== undefined ? String(raw) : String(fallbackUserId || "");
+  const match = text.match(/\d{17,20}/);
+  return match ? match[0] : null;
+}
+
+function legacyDisplayName(record, fallbackName = null, userId = null) {
+  const raw = firstDefined(record, ["displayName", "nombre", "name", "username", "usuario", "empleado", "nick", "nickname"]);
+  const text = raw !== undefined ? String(raw).trim() : String(fallbackName || "").trim();
+  if (text && !/^\d{17,20}$/.test(text)) return text.slice(0, 100);
+  return userId ? `Usuario ${userId}` : "Usuario desconocido";
+}
+
+function legacyStart(record) {
+  const value = firstDefined(record, [
+    "start", "entrada", "inicio", "clockIn", "clock_in", "startedAt", "fechaEntrada", "horaEntrada", "entradaAt", "desde", "in"
+  ]);
+  if (value && typeof value === "object") {
+    return parseLegacyDate(firstDefined(value, ["date", "fecha", "time", "hora", "at", "value", "iso"])) || parseLegacyDate(value.start);
+  }
+  return parseLegacyDate(value);
+}
+
+function legacyEnd(record) {
+  const value = firstDefined(record, [
+    "end", "salida", "fin", "clockOut", "clock_out", "endedAt", "fechaSalida", "horaSalida", "salidaAt", "hasta", "out"
+  ]);
+  if (value && typeof value === "object") {
+    return parseLegacyDate(firstDefined(value, ["date", "fecha", "time", "hora", "at", "value", "iso"])) || parseLegacyDate(value.end);
+  }
+  return parseLegacyDate(value);
+}
+
+function legacyArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function legacyChildArrays(record) {
+  if (!record || typeof record !== "object") return [];
+  const keys = ["fichajes", "registros", "entries", "turnos", "jornadas", "historial", "shifts", "sessions"];
+  const arrays = [];
+  for (const key of keys) {
+    if (Array.isArray(record[key])) arrays.push(record[key]);
+  }
+  return arrays;
+}
+
+function recopilarLegacyRecords(raw) {
+  const records = [];
+
+  const addRecord = (record, fallback = {}) => {
+    if (!record || typeof record !== "object") return;
+    records.push({ record, fallback });
+  };
+
+  const walkUserObject = (userId, userObj) => {
+    if (!userObj || typeof userObj !== "object") return;
+    const fallbackName = legacyDisplayName(userObj, null, userId);
+    const fallback = { userId, displayName: fallbackName };
+
+    for (const arr of legacyChildArrays(userObj)) {
+      for (const item of arr) addRecord(item, fallback);
+    }
+
+    if (legacyStart(userObj)) addRecord(userObj, fallback);
+
+    const open = firstDefined(userObj, ["abierto", "fichajeAbierto", "openShift", "turnoAbierto", "entradaAbierta", "actual"]);
+    if (open && typeof open === "object") addRecord(open, fallback);
+  };
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) addRecord(item);
+    return records;
+  }
+
+  if (!raw || typeof raw !== "object") return records;
+
+  for (const arr of legacyChildArrays(raw)) {
+    for (const item of arr) addRecord(item);
+  }
+
+  for (const key of ["usuarios", "users", "empleados", "employees", "trabajadores", "members"] ) {
+    const obj = raw[key];
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      for (const [userId, userObj] of Object.entries(obj)) walkUserObject(userId, userObj);
+    }
+  }
+
+  // Formato común: { "123456789...": { nombre, fichajes: [...] }, ... }
+  for (const [key, value] of Object.entries(raw)) {
+    if (/^\d{17,20}$/.test(key) && value && typeof value === "object") {
+      walkUserObject(key, value);
+    }
+  }
+
+  return records;
+}
+
+function firmaEntry(entry) {
+  return `${entry.type || "shift"}|${entry.userId || ""}|${entry.start || entry.date || ""}|${entry.end || "open"}|${entry.minutes || ""}`;
+}
+
+function importarFichajesLegacySiExiste(data) {
+  try {
+    if (!fs.existsSync(LEGACY_FICHAJES_FILE)) return data;
+
+    const stat = fs.statSync(LEGACY_FICHAJES_FILE);
+    const migrationKey = `fichajes.json:${stat.mtimeMs}:${stat.size}`;
+    if (data.migrations?.legacyFichajesJsonKey === migrationKey) return data;
+
+    const contenido = fs.readFileSync(LEGACY_FICHAJES_FILE, "utf8").trim();
+    if (!contenido) return data;
+
+    const raw = JSON.parse(contenido);
+    const records = recopilarLegacyRecords(raw);
+    const existentes = new Set((data.entries || []).map(firmaEntry));
+    const openExistentes = new Set(Object.keys(data.openShifts || {}));
+    let importados = 0;
+    let abiertos = 0;
+    let ignorados = 0;
+
+    for (const { record, fallback } of records) {
+      const userId = legacyUserId(record, fallback.userId);
+      if (!userId) { ignorados += 1; continue; }
+
+      const displayName = legacyDisplayName(record, fallback.displayName, userId);
+      const start = legacyStart(record);
+      const end = legacyEnd(record);
+      if (!start) { ignorados += 1; continue; }
+
+      touchEmpleado(data, userId, displayName);
+
+      if (end && end.getTime() >= start.getTime()) {
+        const entry = {
+          id: generarId("legacy"),
+          type: "shift",
+          userId,
+          displayName,
+          start: start.toISOString(),
+          end: end.toISOString(),
+          createdAt: new Date().toISOString(),
+          importedFrom: "fichajes.json"
+        };
+        const firma = firmaEntry(entry);
+        if (!existentes.has(firma)) {
+          data.entries.push(entry);
+          existentes.add(firma);
+          importados += 1;
+        }
+      } else if (!openExistentes.has(userId)) {
+        data.openShifts[userId] = {
+          userId,
+          displayName,
+          start: start.toISOString(),
+          importedFrom: "fichajes.json"
+        };
+        openExistentes.add(userId);
+        abiertos += 1;
+      }
+    }
+
+    data.migrations.legacyFichajesJsonKey = migrationKey;
+    data.migrations.legacyFichajesJsonImportedAt = new Date().toISOString();
+    data.migrations.legacyFichajesJsonImportedEntries = importados;
+    data.migrations.legacyFichajesJsonImportedOpenShifts = abiertos;
+    data.migrations.legacyFichajesJsonIgnored = ignorados;
+
+    if (importados || abiertos) {
+      console.log(`Importado fichajes.json: ${importados} fichajes cerrados, ${abiertos} fichajes abiertos, ${ignorados} ignorados.`);
+      guardarDatos(data);
+    } else {
+      console.warn(`Se encontró fichajes.json, pero no se pudo importar ningún fichaje. Registros leídos: ${records.length}, ignorados: ${ignorados}.`);
+      guardarDatos(data);
+    }
+  } catch (error) {
+    console.error("No se pudo importar /app/data/fichajes.json:", error.message);
+  }
   return data;
 }
 
 function cargarDatos() {
   try {
     if (!fs.existsSync(DATA_FILE)) {
-      const data = crearDatosIniciales();
+      const data = importarFichajesLegacySiExiste(crearDatosIniciales());
       guardarDatos(data, { backup: false });
       return data;
     }
 
     const contenido = fs.readFileSync(DATA_FILE, "utf8").trim();
     if (!contenido) return crearDatosIniciales();
-    return normalizarDatos(JSON.parse(contenido));
+    return importarFichajesLegacySiExiste(normalizarDatos(JSON.parse(contenido)));
   } catch (error) {
     console.error("No se pudo leer el archivo de datos. Se creará uno nuevo:", error.message);
     return crearDatosIniciales();
