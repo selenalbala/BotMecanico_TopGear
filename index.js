@@ -592,7 +592,7 @@ async function sinPermiso(interaction) {
 function crearEmbedFichajes() {
   return new EmbedBuilder()
     .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("🕒 Fichajes Top Gear")
+    .setTitle("🟢⚫ 🕒 Fichajes Top Gear")
     .setDescription("Ficha tu entrada y salida. También puedes consultar tus horas por semana.")
     .setFooter({ text: "Top Gear · Control de horas" })
     .setTimestamp();
@@ -611,9 +611,9 @@ function crearBotonesFichajes() {
 function crearOpcionesMisHoras() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:esta`).setLabel("Esta semana").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:pasada`).setLabel("Semana pasada").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:rango`).setLabel("Elegir fechas").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:esta`).setLabel("🟢 Esta semana").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:pasada`).setLabel("🔵 Semana pasada").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:rango`).setLabel("⚫ Elegir fechas").setStyle(ButtonStyle.Secondary)
     )
   ];
 }
@@ -629,7 +629,7 @@ function crearEmbedPagos() {
 function crearBotonesPagos() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("Consultar empleado").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("🟢 Consultar empleado").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:modificar`).setLabel("🛠️ Modificar horas").setStyle(ButtonStyle.Danger)
     )
   ];
@@ -671,9 +671,9 @@ function crearSelectoresEmpleados(data, modo, placeholderBase) {
 function crearOpcionesConsultaPagos(data) {
   const rows = [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:esta`).setLabel("Todos · esta semana").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:pasada`).setLabel("Todos · semana pasada").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:rango`).setLabel("Todos · rango").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:esta`).setLabel("🟢 Todos · esta semana").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:pasada`).setLabel("🔵 Todos · semana pasada").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:rango`).setLabel("⚫ Todos · rango").setStyle(ButtonStyle.Secondary)
     )
   ];
 
@@ -688,9 +688,9 @@ function crearSelectorModificarHoras(data) {
 function crearOpcionesRangoEmpleado(userId) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:esta`).setLabel("Esta semana").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:pasada`).setLabel("Semana pasada").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:rango`).setLabel("Elegir fechas").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:esta`).setLabel("🟢 Esta semana").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:pasada`).setLabel("🔵 Semana pasada").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:rango`).setLabel("⚫ Elegir fechas").setStyle(ButtonStyle.Secondary)
     )
   ];
 }
@@ -698,7 +698,7 @@ function crearOpcionesRangoEmpleado(userId) {
 function crearEmbedCalculadora() {
   return new EmbedBuilder()
     .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("Top Gear | Calculadora")
+    .setTitle("🟢⚫ Top Gear | Calculadora")
     .setDescription("Abre la calculadora para calcular mejoras, reparaciones y descuentos.")
     .setTimestamp();
 }
@@ -708,7 +708,7 @@ function crearBotonesCalculadora() {
     new ActionRowBuilder().addComponents(
       // Discord a veces rechaza algunos unicode en setEmoji().
       // Por eso el emote va dentro del texto del botón.
-      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("🧮 Calculadora").setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("🟢 🧮 Calculadora").setStyle(ButtonStyle.Success)
     )
   ];
 }
@@ -716,7 +716,7 @@ function crearBotonesCalculadora() {
 function crearEmbedPostulantes() {
   return new EmbedBuilder()
     .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("🏁 Postulaciones Top Gear")
+    .setTitle("🟢⚫ 🏁 Postulaciones Top Gear")
     .setDescription(`¿Quieres unirte al taller?\n\nPulsa el botón de abajo y completa tu solicitud.\n\n🔧 La postulación será revisada por el equipo encargado.`)
     .setFooter({ text: "Top Gear · Sistema de postulaciones" })
     .setTimestamp();
@@ -725,7 +725,7 @@ function crearEmbedPostulantes() {
 function crearBotonesPostulantes() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("🔧 Crear postulación").setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("🟢 Crear postulación").setStyle(ButtonStyle.Success)
     )
   ];
 }
@@ -964,7 +964,16 @@ function crearModalPostulacion() {
 }
 
 function crearVistaCalculadora(userId) {
-  const items = config.CALCULATOR_ITEMS.slice(0, 25);
+  const descuentos = (config.CALCULATOR_DISCOUNTS.length ? config.CALCULATOR_DISCOUNTS : [0, 5, 10, 15])
+    .filter(discount => Number.isFinite(Number(discount)))
+    .map(Number)
+    .slice(0, 4);
+
+  // Discord permite máximo 5 filas y 5 botones por fila.
+  // Reservamos una fila para descuentos + limpiar, así la calculadora vuelve a ir por botones.
+  const maxItems = Math.max(1, 25 - descuentos.length - 1);
+  const items = config.CALCULATOR_ITEMS.slice(0, maxItems);
+
   let session = calcSessions.get(userId);
   if (!session) {
     session = { selected: new Set(), discount: 0 };
@@ -977,46 +986,49 @@ function crearVistaCalculadora(userId) {
 
   const detalle = seleccionados.length
     ? seleccionados.map(item => `• ${item.label}: **${formatearDinero(item.price)}**`).join("\n")
-    : "No hay servicios seleccionados.";
+    : "No hay servicios seleccionados. Pulsa los botones de abajo para añadirlos.";
 
   const embed = new EmbedBuilder()
     .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("🧮 Calculadora Top Gear")
+    .setTitle("🟢⚫ 🧮 Calculadora Top Gear")
     .setDescription(limitarTexto(detalle, 1600))
     .addFields(
       { name: "Subtotal", value: `**${formatearDinero(subtotal)}**`, inline: true },
       { name: "Descuento", value: `**${session.discount || 0}%**`, inline: true },
       { name: "Total", value: `**${formatearDinero(total)}**`, inline: true }
     )
-    .setFooter({ text: "Selecciona servicios y aplica descuento cuando haga falta" })
+    .setFooter({ text: "Pulsa un servicio para añadirlo o quitarlo. Los seleccionados se marcan en verde." })
     .setTimestamp();
 
-  const select = new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`${PREFIX}:calc:items`)
-      .setPlaceholder("Añadir/quitar servicios")
-      .setMinValues(0)
-      .setMaxValues(Math.max(1, items.length))
-      .addOptions(items.map(item => ({
-        label: item.label.slice(0, 70),
-        description: formatearDinero(item.price).slice(0, 95),
-        value: item.id,
-        default: session.selected.has(item.id)
-      })))
-  );
+  const rows = [];
+  for (let i = 0; i < items.length; i += 5) {
+    const chunk = items.slice(i, i + 5);
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        ...chunk.map(item => {
+          const seleccionado = session.selected.has(item.id);
+          const labelBase = `${item.label} · ${formatearDinero(item.price)}`;
+          return new ButtonBuilder()
+            .setCustomId(`${PREFIX}:calc:item:${item.id}`)
+            .setLabel((seleccionado ? `✅ ${labelBase}` : labelBase).slice(0, 80))
+            .setStyle(seleccionado ? ButtonStyle.Success : ButtonStyle.Secondary);
+        })
+      )
+    );
+  }
 
-  const descuentos = (config.CALCULATOR_DISCOUNTS.length ? config.CALCULATOR_DISCOUNTS : [0, 5, 10, 15]).slice(0, 4);
   const rowDescuentos = new ActionRowBuilder().addComponents(
     ...descuentos.map(discount =>
       new ButtonBuilder()
         .setCustomId(`${PREFIX}:calc:descuento:${discount}`)
         .setLabel(`${discount}%`)
-        .setStyle(session.discount === discount ? ButtonStyle.Success : ButtonStyle.Secondary)
+        .setStyle(session.discount === discount ? ButtonStyle.Success : ButtonStyle.Primary)
     ),
     new ButtonBuilder().setCustomId(`${PREFIX}:calc:limpiar`).setLabel("🔴 Limpiar").setStyle(ButtonStyle.Danger)
   );
+  rows.push(rowDescuentos);
 
-  return { embeds: [embed], components: [select, rowDescuentos] };
+  return { embeds: [embed], components: rows.slice(0, 5) };
 }
 
 function crearSelectorCalculadora() {
@@ -1246,13 +1258,23 @@ async function manejarSelectorCalculadora(interaction) {
 
 async function manejarBotonCalculadora(interaction, id) {
   const session = calcSessions.get(interaction.user.id) || { selected: new Set(), discount: 0 };
+  if (!(session.selected instanceof Set)) session.selected = new Set(session.selected || []);
+
   if (id === `${PREFIX}:calc:limpiar`) {
     session.selected = new Set();
     session.discount = 0;
   } else if (id.startsWith(`${PREFIX}:calc:descuento:`)) {
     const value = Number(id.replace(`${PREFIX}:calc:descuento:`, ""));
     session.discount = Number.isFinite(value) ? value : 0;
+  } else if (id.startsWith(`${PREFIX}:calc:item:`)) {
+    const itemId = id.replace(`${PREFIX}:calc:item:`, "");
+    const existe = config.CALCULATOR_ITEMS.some(item => item.id === itemId);
+    if (existe) {
+      if (session.selected.has(itemId)) session.selected.delete(itemId);
+      else session.selected.add(itemId);
+    }
   }
+
   calcSessions.set(interaction.user.id, session);
   return interaction.update(crearVistaCalculadora(interaction.user.id));
 }
@@ -1260,7 +1282,7 @@ async function manejarBotonCalculadora(interaction, id) {
 function crearEmbedPostulacion(app) {
   return new EmbedBuilder()
     .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("🏁 Nueva postulación Top Gear")
+    .setTitle("🟢⚫ 🏁 Nueva postulación Top Gear")
     .setDescription(`Usuario: <@${app.userId}>`)
     .addFields(
       { name: "Nombre IC", value: app.nombreIc || "-", inline: true },
@@ -1276,8 +1298,8 @@ function crearEmbedPostulacion(app) {
 function crearBotonesRevisionPostulacion(appId, disabled = false) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:app:aceptar:${appId}`).setLabel("Aceptar").setStyle(ButtonStyle.Success).setDisabled(disabled),
-      new ButtonBuilder().setCustomId(`${PREFIX}:app:denegar:${appId}`).setLabel("Denegar").setStyle(ButtonStyle.Danger).setDisabled(disabled)
+      new ButtonBuilder().setCustomId(`${PREFIX}:app:aceptar:${appId}`).setLabel("🟢 Aceptar").setStyle(ButtonStyle.Success).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`${PREFIX}:app:denegar:${appId}`).setLabel("🔴 Denegar").setStyle(ButtonStyle.Danger).setDisabled(disabled)
     )
   ];
 }
@@ -1454,7 +1476,7 @@ client.once(Events.ClientReady, async () => {
 
   if (config.AUTO_PUBLISH_PANELS) {
     const publicados = await publicarPaneles();
-    await enviarLog(`✅ Bot iniciado. Paneles publicados/actualizados: ${publicados}.`);
+    console.log(`Paneles publicados/actualizados: ${publicados}.`);
   } else {
     console.log("AUTO_PUBLISH_PANELS=false. No se publican paneles al iniciar. Usa /paneles para publicarlos manualmente.");
   }
@@ -1550,7 +1572,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       if (id === `${PREFIX}:calc:abrir`) return manejarCalculadora(interaction);
-      if (id === `${PREFIX}:calc:limpiar` || id.startsWith(`${PREFIX}:calc:descuento:`)) return manejarBotonCalculadora(interaction, id);
+      if (id === `${PREFIX}:calc:limpiar` || id.startsWith(`${PREFIX}:calc:descuento:`) || id.startsWith(`${PREFIX}:calc:item:`)) return manejarBotonCalculadora(interaction, id);
       if (id === `${PREFIX}:postular:abrir`) return interaction.showModal(crearModalPostulacion());
 
       if (id.startsWith(`${PREFIX}:app:aceptar:`)) {
