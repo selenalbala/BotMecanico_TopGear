@@ -31,6 +31,14 @@ const PREFIX = "tg";
 const MINUTE = 60 * 1000;
 const MAX_DESCRIPTION = 3800;
 
+// Tema visual Top Gear: verde/negro.
+// Discord no permite botones negros personalizados, así que usamos:
+// Success = verde, Primary = azul, Danger = rojo, Secondary = gris oscuro.
+const COLOR_TOPGEAR_GREEN = 0x00A86B;
+const COLOR_TOPGEAR_DARK = 0x0B0F0C;
+const COLOR_WARNING_RED = 0xC01718;
+
+
 function existeDirectorio(ruta) {
   try {
     return fs.existsSync(ruta) && fs.statSync(ruta).isDirectory();
@@ -504,7 +512,7 @@ function embedEmpleado(data, userId, range, title = "Consulta de empleado") {
     : "No hay fichajes en este periodo.";
 
   return new EmbedBuilder()
-    .setColor(0xC01718)
+    .setColor(COLOR_TOPGEAR_GREEN)
     .setTitle(title)
     .setDescription(`**Empleado:** ${displayName}\n**Periodo:** ${etiquetaRango(range)}\n**Total:** ${minutosAHoras(total.minutos)}${total.abiertos ? "\n🟢 Tiene un fichaje abierto." : ""}`)
     .addFields(
@@ -536,7 +544,7 @@ function embedTodos(data, range, title = "Consulta de empleados") {
   const totalGeneral = resultados.reduce((acc, item) => acc + item.minutos, 0);
 
   return new EmbedBuilder()
-    .setColor(0xC01718)
+    .setColor(COLOR_TOPGEAR_GREEN)
     .setTitle(title)
     .setDescription(limitarTexto(descripcion))
     .addFields(
@@ -583,8 +591,8 @@ async function sinPermiso(interaction) {
 
 function crearEmbedFichajes() {
   return new EmbedBuilder()
-    .setColor(0xC01718)
-    .setTitle("🕒 Fichajes Top Gear")
+    .setColor(COLOR_TOPGEAR_GREEN)
+    .setTitle("🟢⚫ 🕒 Fichajes Top Gear")
     .setDescription("Ficha tu entrada y salida. También puedes consultar tus horas por semana.")
     .setFooter({ text: "Top Gear · Control de horas" })
     .setTimestamp();
@@ -593,9 +601,9 @@ function crearEmbedFichajes() {
 function crearBotonesFichajes() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:entrada`).setLabel("Entrada").setEmoji("🟢").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:salida`).setLabel("Salida").setEmoji("🔴").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras`).setLabel("Mis horas").setEmoji("⏱️").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:entrada`).setLabel("🟢 Entrada").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:salida`).setLabel("🔴 Salida").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras`).setLabel("⏱️ Mis horas").setStyle(ButtonStyle.Primary)
     )
   ];
 }
@@ -603,17 +611,17 @@ function crearBotonesFichajes() {
 function crearOpcionesMisHoras() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:esta`).setLabel("Esta semana").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:pasada`).setLabel("Semana pasada").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:rango`).setLabel("Elegir fechas").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:esta`).setLabel("🟢 Esta semana").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:pasada`).setLabel("🔵 Semana pasada").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:rango`).setLabel("⚫ Elegir fechas").setStyle(ButtonStyle.Secondary)
     )
   ];
 }
 
 function crearEmbedPagos() {
   return new EmbedBuilder()
-    .setColor(0xC01718)
-    .setTitle("Top Gear | Pagos")
+    .setColor(COLOR_TOPGEAR_GREEN)
+    .setTitle("🟢⚫ Top Gear | Pagos")
     .setDescription("Panel para consultar horas de empleados y modificar horas fichadas cuando haga falta.\n\nOpciones incluidas: todos los empleados, empleado concreto, esta semana, semana pasada y rango personalizado.")
     .setTimestamp();
 }
@@ -621,8 +629,8 @@ function crearEmbedPagos() {
 function crearBotonesPagos() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("Consultar empleado").setEmoji("📋").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:modificar`).setLabel("Modificar horas").setEmoji("🛠️").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("🟢 Consultar empleado").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:modificar`).setLabel("🛠️ Modificar horas").setStyle(ButtonStyle.Danger)
     )
   ];
 }
@@ -663,9 +671,9 @@ function crearSelectoresEmpleados(data, modo, placeholderBase) {
 function crearOpcionesConsultaPagos(data) {
   const rows = [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:esta`).setLabel("Todos · esta semana").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:pasada`).setLabel("Todos · semana pasada").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:rango`).setLabel("Todos · rango").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:esta`).setLabel("🟢 Todos · esta semana").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:pasada`).setLabel("🔵 Todos · semana pasada").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:rango`).setLabel("⚫ Todos · rango").setStyle(ButtonStyle.Secondary)
     )
   ];
 
@@ -680,17 +688,17 @@ function crearSelectorModificarHoras(data) {
 function crearOpcionesRangoEmpleado(userId) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:esta`).setLabel("Esta semana").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:pasada`).setLabel("Semana pasada").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:rango`).setLabel("Elegir fechas").setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:esta`).setLabel("🟢 Esta semana").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:pasada`).setLabel("🔵 Semana pasada").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:rango`).setLabel("⚫ Elegir fechas").setStyle(ButtonStyle.Secondary)
     )
   ];
 }
 
 function crearEmbedCalculadora() {
   return new EmbedBuilder()
-    .setColor(0xC01718)
-    .setTitle("Top Gear | Calculadora")
+    .setColor(COLOR_TOPGEAR_GREEN)
+    .setTitle("🟢⚫ Top Gear | Calculadora")
     .setDescription("Abre la calculadora para calcular mejoras, reparaciones y descuentos.")
     .setTimestamp();
 }
@@ -700,15 +708,15 @@ function crearBotonesCalculadora() {
     new ActionRowBuilder().addComponents(
       // Discord a veces rechaza algunos unicode en setEmoji().
       // Por eso el emote va dentro del texto del botón.
-      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("🧮 Calculadora").setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("🟢 🧮 Calculadora").setStyle(ButtonStyle.Success)
     )
   ];
 }
 
 function crearEmbedPostulantes() {
   return new EmbedBuilder()
-    .setColor(0xC01718)
-    .setTitle("🏁 Postulaciones Top Gear")
+    .setColor(COLOR_TOPGEAR_GREEN)
+    .setTitle("🟢⚫ 🏁 Postulaciones Top Gear")
     .setDescription(`¿Quieres unirte al taller?\n\nPulsa el botón de abajo y completa tu solicitud.\n\n🔧 La postulación será revisada por el equipo encargado.`)
     .setFooter({ text: "Top Gear · Sistema de postulaciones" })
     .setTimestamp();
@@ -717,7 +725,7 @@ function crearEmbedPostulantes() {
 function crearBotonesPostulantes() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("Crear postulación").setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("🟢 Crear postulación").setStyle(ButtonStyle.Success)
     )
   ];
 }
@@ -972,8 +980,8 @@ function crearVistaCalculadora(userId) {
     : "No hay servicios seleccionados.";
 
   const embed = new EmbedBuilder()
-    .setColor(0xC01718)
-    .setTitle("🧮 Calculadora Top Gear")
+    .setColor(COLOR_TOPGEAR_GREEN)
+    .setTitle("🟢⚫ 🧮 Calculadora Top Gear")
     .setDescription(limitarTexto(detalle, 1600))
     .addFields(
       { name: "Subtotal", value: `**${formatearDinero(subtotal)}**`, inline: true },
@@ -1005,7 +1013,7 @@ function crearVistaCalculadora(userId) {
         .setLabel(`${discount}%`)
         .setStyle(session.discount === discount ? ButtonStyle.Success : ButtonStyle.Secondary)
     ),
-    new ButtonBuilder().setCustomId(`${PREFIX}:calc:limpiar`).setLabel("Limpiar").setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId(`${PREFIX}:calc:limpiar`).setLabel("🔴 Limpiar").setStyle(ButtonStyle.Danger)
   );
 
   return { embeds: [embed], components: [select, rowDescuentos] };
@@ -1251,8 +1259,8 @@ async function manejarBotonCalculadora(interaction, id) {
 
 function crearEmbedPostulacion(app) {
   return new EmbedBuilder()
-    .setColor(0xC01718)
-    .setTitle("🏁 Nueva postulación Top Gear")
+    .setColor(COLOR_TOPGEAR_GREEN)
+    .setTitle("🟢⚫ 🏁 Nueva postulación Top Gear")
     .setDescription(`Usuario: <@${app.userId}>`)
     .addFields(
       { name: "Nombre IC", value: app.nombreIc || "-", inline: true },
@@ -1268,8 +1276,8 @@ function crearEmbedPostulacion(app) {
 function crearBotonesRevisionPostulacion(appId, disabled = false) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:app:aceptar:${appId}`).setLabel("Aceptar").setStyle(ButtonStyle.Success).setDisabled(disabled),
-      new ButtonBuilder().setCustomId(`${PREFIX}:app:denegar:${appId}`).setLabel("Denegar").setStyle(ButtonStyle.Danger).setDisabled(disabled)
+      new ButtonBuilder().setCustomId(`${PREFIX}:app:aceptar:${appId}`).setLabel("🟢 Aceptar").setStyle(ButtonStyle.Success).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`${PREFIX}:app:denegar:${appId}`).setLabel("🔴 Denegar").setStyle(ButtonStyle.Danger).setDisabled(disabled)
     )
   ];
 }
