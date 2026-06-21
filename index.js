@@ -59,7 +59,7 @@ const DATA_FILE = config.DATA_FILE ? path.resolve(config.DATA_FILE) : path.join(
 const BACKUP_DIR = path.join(path.dirname(DATA_FILE), "backups");
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMembers],
   partials: [Partials.Channel]
 });
 
@@ -79,6 +79,7 @@ function crearDatosIniciales() {
     entries: [],
     employees: {},
     applications: {},
+    formerMembers: {},
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -94,6 +95,7 @@ function normalizarDatos(data) {
   data.entries = Array.isArray(data.entries) ? data.entries : [];
   data.employees = data.employees && typeof data.employees === "object" ? data.employees : {};
   data.applications = data.applications && typeof data.applications === "object" ? data.applications : {};
+  data.formerMembers = data.formerMembers && typeof data.formerMembers === "object" ? data.formerMembers : {};
   if (!data.createdAt) data.createdAt = new Date().toISOString();
   data.updatedAt = new Date().toISOString();
   return data;
@@ -265,16 +267,104 @@ function nombreMiembro(interaction) {
   return interaction.member?.displayName || interaction.user?.globalName || interaction.user?.username || `Usuario ${interaction.user?.id || "desconocido"}`;
 }
 
-function touchEmpleado(data, userId, displayName) {
+function touchEmpleado(data, userId, displayName, extra = {}) {
   if (!userId) return;
   const anterior = data.employees[userId] || {};
   data.employees[userId] = {
     userId,
     displayName: displayName || anterior.displayName || `Usuario ${userId}`,
+    avatarURL: extra.avatarURL || anterior.avatarURL || null,
+    roleIds: Array.isArray(extra.roleIds) ? extra.roleIds : (anterior.roleIds || []),
+    roleNames: Array.isArray(extra.roleNames) ? extra.roleNames : (anterior.roleNames || []),
     firstSeenAt: anterior.firstSeenAt || new Date().toISOString(),
     lastSeenAt: new Date().toISOString()
   };
 }
+
+function avatarUsuario(userOrMember) {
+  try {
+    if (userOrMember?.displayAvatarURL) return userOrMember.displayAvatarURL({ size: 128 });
+    if (userOrMember?.user?.displayAvatarURL) return userOrMember.user.displayAvatarURL({ size: 128 });
+  } catch {}
+  return null;
+}
+
+function nombreDesdeMember(member) {
+  return member?.displayName || member?.user?.globalName || member?.user?.username || `Usuario ${member?.id || "desconocido"}`;
+}
+
+function rolesEmpleadosConfigurados() {
+  const ids = [
+    ...(config.ROLES.TRACKED_EMPLOYEES || []),
+    ...(config.ROLES.EMPLOYEES || []),
+    ...(config.ROLES.MANAGERS || []),
+    ...(config.ROLES.ADMINS || []),
+    ...(config.ROLES.PAYMENTS || [])
+  ];
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function memberTieneRolEmpleado(member) {
+  const roleIds = rolesEmpleadosConfigurados();
+  if (!roleIds.length) return false;
+  return roleIds.some(roleId => member?.roles?.cache?.has(roleId));
+}
+
+function rolesAplicablesPostulante() {
+  return [...new Set([...(config.ROLES.JOIN || []), ...(config.ROLES.APPLICANT || [])].filter(Boolean))];
+}
+
+async function obtenerMiembroSeguro(guild, userId) {
+  if (!guild || !userId) return null;
+  return guild.members.cache.get(userId) || await guild.members.fetch(userId).catch(() => null);
+}
+
+async function obtenerEmpleadosGuild(interactionOrGuild, data = cargarDatos()) {
+  const guild = interactionOrGuild?.guild || interactionOrGuild;
+  const roleIds = rolesEmpleadosConfigurados();
+  const empleados = new Map();
+
+  if (guild && roleIds.length) {
+    try {
+      // Necesita Server Members Intent activado en el Developer Portal.
+      await guild.members.fetch();
+      for (const member of guild.members.cache.values()) {
+        if (member.user?.bot) continue;
+        if (!memberTieneRolEmpleado(member)) continue;
+        const roleNames = roleIds
+          .filter(roleId => member.roles.cache.has(roleId))
+          .map(roleId => member.guild.roles.cache.get(roleId)?.name || "Rol")
+          .filter(Boolean);
+        const displayName = nombreDesdeMember(member);
+        const avatarURL = avatarUsuario(member);
+        touchEmpleado(data, member.id, displayName, {
+          avatarURL,
+          roleIds: roleIds.filter(roleId => member.roles.cache.has(roleId)),
+          roleNames
+        });
+        empleados.set(member.id, { userId: member.id, displayName, avatarURL, roleNames });
+      }
+      guardarDatos(data);
+    } catch (error) {
+      console.warn("No se pudo cargar la lista completa de empleados por roles. Revisa Server Members Intent:", error.message);
+    }
+  }
+
+  // Fallback: datos ya guardados por fichajes/postulaciones.
+  for (const userId of obtenerIdsEmpleados(data)) {
+    if (empleados.has(userId)) continue;
+    const emp = data.employees?.[userId] || {};
+    empleados.set(userId, {
+      userId,
+      displayName: emp.displayName || `Usuario ${userId}`,
+      avatarURL: emp.avatarURL || null,
+      roleNames: emp.roleNames || []
+    });
+  }
+
+  return [...empleados.values()].sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
+}
+
 
 function pad2(value) {
   return String(value).padStart(2, "0");
@@ -639,28 +729,30 @@ function empleadosParaSelector(data) {
   return obtenerIdsEmpleados(data)
     .map(userId => ({
       userId,
-      displayName: data.employees?.[userId]?.displayName || `Usuario ${userId}`
+      displayName: data.employees?.[userId]?.displayName || `Usuario ${userId}`,
+      avatarURL: data.employees?.[userId]?.avatarURL || null,
+      roleNames: data.employees?.[userId]?.roleNames || []
     }))
     .sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
 }
 
-function crearSelectoresEmpleados(data, modo, placeholderBase) {
-  const empleados = empleadosParaSelector(data).slice(0, 100);
+function crearSelectoresEmpleadosDesdeLista(empleados, modo, placeholderBase) {
+  const lista = empleados.slice(0, 100);
   const rows = [];
-  for (let i = 0; i < empleados.length; i += 25) {
-    const chunk = empleados.slice(i, i + 25);
+  for (let i = 0; i < lista.length; i += 25) {
+    const chunk = lista.slice(i, i + 25);
     const parte = Math.floor(i / 25) + 1;
     rows.push(
       new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
           .setCustomId(`${PREFIX}:pagos:selectempleado:${modo}:${parte}`)
-          .setPlaceholder(empleados.length > 25 ? `${placeholderBase} · parte ${parte}` : placeholderBase)
+          .setPlaceholder(lista.length > 25 ? `${placeholderBase} · parte ${parte}` : placeholderBase)
           .setMinValues(1)
           .setMaxValues(1)
           .addOptions(chunk.map(emp => ({
             label: emp.displayName.slice(0, 100),
             value: emp.userId,
-            description: `ID ${emp.userId}`.slice(0, 100)
+            description: (emp.roleNames?.length ? emp.roleNames.join(", ") : "Empleado Top Gear").slice(0, 100)
           })))
       )
     );
@@ -668,7 +760,12 @@ function crearSelectoresEmpleados(data, modo, placeholderBase) {
   return rows;
 }
 
-function crearOpcionesConsultaPagos(data) {
+function crearSelectoresEmpleados(data, modo, placeholderBase) {
+  return crearSelectoresEmpleadosDesdeLista(empleadosParaSelector(data), modo, placeholderBase);
+}
+
+async function crearOpcionesConsultaPagos(interaction, data) {
+  const empleados = await obtenerEmpleadosGuild(interaction, data);
   const rows = [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:esta`).setLabel("Todos · esta semana").setStyle(ButtonStyle.Success),
@@ -677,12 +774,16 @@ function crearOpcionesConsultaPagos(data) {
     )
   ];
 
-  rows.push(...crearSelectoresEmpleados(data, "consultar", "Selecciona empleado"));
-  return rows.slice(0, 5);
+  rows.push(...crearSelectoresEmpleadosDesdeLista(empleados, "consultar", "Selecciona empleado"));
+  return { rows: rows.slice(0, 5), empleados };
 }
 
-function crearSelectorModificarHoras(data) {
-  return crearSelectoresEmpleados(data, "modificar", "Selecciona empleado para modificar horas").slice(0, 5);
+async function crearSelectorModificarHoras(interaction, data) {
+  const empleados = await obtenerEmpleadosGuild(interaction, data);
+  return {
+    rows: crearSelectoresEmpleadosDesdeLista(empleados, "modificar", "Selecciona empleado para modificar horas").slice(0, 5),
+    empleados
+  };
 }
 
 function crearOpcionesRangoEmpleado(userId) {
@@ -998,14 +1099,15 @@ function cantidadCalculadora(session, itemId) {
 }
 
 function crearVistaCalculadora(userId) {
-  const descuentos = (config.CALCULATOR_DISCOUNTS.length ? config.CALCULATOR_DISCOUNTS : [5, 10, 15])
+  const descuentos = [...new Set([0, ...(config.CALCULATOR_DISCOUNTS.length ? config.CALCULATOR_DISCOUNTS : [5, 10, 15])])]
     .filter(discount => Number.isFinite(Number(discount)))
     .map(Number)
-    .filter(discount => discount > 0)
-    .slice(0, 3);
+    .filter(discount => discount >= 0 && discount <= 100)
+    .slice(0, 4);
 
   // Discord permite máximo 5 filas y 5 botones por fila.
-  // Con 19 servicios + Limpiar + Añadir/Quitar + 3 descuentos entramos justo en 25 botones.
+  // 19 servicios + Añadir/Quitar + 4 descuentos = 25 botones.
+  // No se muestra Limpiar para poder mantener el botón 0% y todos los servicios.
   const items = config.CALCULATOR_ITEMS.slice(0, 19);
   const session = obtenerSesionCalculadora(userId);
 
@@ -1035,7 +1137,7 @@ function crearVistaCalculadora(userId) {
       { name: "Descuento", value: `**${session.discount || 0}%**`, inline: true },
       { name: "Total", value: `**${formatearDinero(total)}**`, inline: true }
     )
-    .setFooter({ text: "Elige Añadir o Quitar y luego pulsa un servicio. Puedes pulsar el mismo servicio varias veces." })
+    .setFooter({ text: "Elige Añadir o Quitar y pulsa servicios. Usa 0% para quitar el descuento." })
     .setTimestamp();
 
   const rows = [];
@@ -1057,36 +1159,32 @@ function crearVistaCalculadora(userId) {
     );
   }
 
-  const botonLimpiar = new ButtonBuilder()
-    .setCustomId(`${PREFIX}:calc:limpiar`)
-    .setLabel("Limpiar")
-    .setStyle(ButtonStyle.Danger);
+  const botonAnadir = new ButtonBuilder()
+    .setCustomId(`${PREFIX}:calc:modo:add`)
+    .setLabel("Añadir")
+    .setStyle(session.mode === "add" ? ButtonStyle.Success : ButtonStyle.Secondary);
 
-  if (!rows.length) rows.push(new ActionRowBuilder().addComponents(botonLimpiar));
+  const botonQuitar = new ButtonBuilder()
+    .setCustomId(`${PREFIX}:calc:modo:remove`)
+    .setLabel("Quitar")
+    .setStyle(session.mode === "remove" ? ButtonStyle.Danger : ButtonStyle.Secondary);
+
+  if (!rows.length) rows.push(new ActionRowBuilder().addComponents(botonAnadir));
   else {
     const ultimaFila = rows[rows.length - 1];
-    if ((ultimaFila.components?.length || 0) < 5) ultimaFila.addComponents(botonLimpiar);
-    else rows.push(new ActionRowBuilder().addComponents(botonLimpiar));
+    if ((ultimaFila.components?.length || 0) < 5) ultimaFila.addComponents(botonAnadir);
+    else rows.push(new ActionRowBuilder().addComponents(botonAnadir));
   }
 
-  const controles = [
-    new ButtonBuilder()
-      .setCustomId(`${PREFIX}:calc:modo:add`)
-      .setLabel("Añadir")
-      .setStyle(session.mode === "add" ? ButtonStyle.Success : ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(`${PREFIX}:calc:modo:remove`)
-      .setLabel("Quitar")
-      .setStyle(session.mode === "remove" ? ButtonStyle.Danger : ButtonStyle.Secondary),
-    ...descuentos.map(discount =>
+  rows.push(new ActionRowBuilder().addComponents(
+    botonQuitar,
+    ...descuentos.slice(0, 4).map(discount =>
       new ButtonBuilder()
         .setCustomId(`${PREFIX}:calc:descuento:${discount}`)
         .setLabel(`${discount}%`)
         .setStyle(session.discount === discount ? ButtonStyle.Success : ButtonStyle.Primary)
     )
-  ];
-
-  rows.push(new ActionRowBuilder().addComponents(...controles.slice(0, 5)));
+  ));
 
   return { embeds: [embed], components: rows.slice(0, 5) };
 }
@@ -1142,7 +1240,7 @@ async function manejarEntrada(interaction) {
   const data = cargarDatos();
   const userId = interaction.user.id;
   const displayName = nombreMiembro(interaction);
-  touchEmpleado(data, userId, displayName);
+  touchEmpleado(data, userId, displayName, { avatarURL: avatarUsuario(interaction.member || interaction.user) });
 
   if (data.openShifts[userId]) {
     const inicio = new Date(data.openShifts[userId].start);
@@ -1166,7 +1264,7 @@ async function manejarSalida(interaction) {
   const data = cargarDatos();
   const userId = interaction.user.id;
   const displayName = nombreMiembro(interaction);
-  touchEmpleado(data, userId, displayName);
+  touchEmpleado(data, userId, displayName, { avatarURL: avatarUsuario(interaction.member || interaction.user) });
 
   const abierta = data.openShifts[userId];
   if (!abierta) return responderError(interaction, "No tienes ninguna entrada abierta.");
@@ -1194,7 +1292,7 @@ async function manejarSalida(interaction) {
 async function manejarMisHoras(interaction) {
   const data = cargarDatos();
   const userId = interaction.user.id;
-  touchEmpleado(data, userId, nombreMiembro(interaction));
+  touchEmpleado(data, userId, nombreMiembro(interaction), { avatarURL: avatarUsuario(interaction.member || interaction.user) });
   guardarDatos(data);
 
   return interaction.reply(respuestaPrivada({
@@ -1206,7 +1304,7 @@ async function manejarMisHoras(interaction) {
 async function consultarMisHoras(interaction, range) {
   const data = cargarDatos();
   const userId = interaction.user.id;
-  touchEmpleado(data, userId, nombreMiembro(interaction));
+  touchEmpleado(data, userId, nombreMiembro(interaction), { avatarURL: avatarUsuario(interaction.member || interaction.user) });
   guardarDatos(data);
 
   return interaction.reply(respuestaPrivada({
@@ -1216,7 +1314,8 @@ async function consultarMisHoras(interaction, range) {
 
 async function consultarTodos(interaction, range) {
   const data = cargarDatos();
-  return interaction.reply(respuestaPrivada({ embeds: [embedTodos(data, range, `Todos los empleados · ${range.label}`)] }));
+  const empleados = await obtenerEmpleadosGuild(interaction, data);
+  return interaction.reply(respuestaPrivada({ embeds: [embedTodosDesdeLista(data, empleados, range, `Todos los empleados · ${range.label}`)] }));
 }
 
 async function consultarEmpleado(interaction, empleadoTexto, range) {
@@ -1288,7 +1387,7 @@ async function manejarComandoHoras(interaction) {
     const member = await interaction.guild?.members.fetch(userId);
     if (member?.displayName) displayName = member.displayName;
   } catch {}
-  touchEmpleado(data, userId, displayName);
+  touchEmpleado(data, userId, displayName, { avatarURL: avatarUsuario(user || interaction.member || interaction.user) });
   guardarDatos(data);
 
   return interaction.reply(respuestaPrivada({ embeds: [embedEmpleado(data, userId, range, userId === interaction.user.id ? "Mis horas" : "Horas de empleado")] }));
@@ -1370,7 +1469,8 @@ function crearBotonesRevisionPostulacion(appId, disabled = false) {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`${PREFIX}:app:aceptar:${appId}`).setLabel("Aceptar").setStyle(ButtonStyle.Success).setDisabled(disabled),
-      new ButtonBuilder().setCustomId(`${PREFIX}:app:denegar:${appId}`).setLabel("Denegar").setStyle(ButtonStyle.Danger).setDisabled(disabled)
+      new ButtonBuilder().setCustomId(`${PREFIX}:app:denegar:${appId}`).setLabel("Denegar").setStyle(ButtonStyle.Danger).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`${PREFIX}:app:cerrar:${appId}`).setLabel("Cerrar ticket").setStyle(ButtonStyle.Danger)
     )
   ];
 }
@@ -1442,6 +1542,7 @@ async function manejarPostulacion(interaction) {
     id,
     userId: interaction.user.id,
     displayName: nombreMiembro(interaction),
+    avatarURL: avatarUsuario(interaction.member || interaction.user),
     nombreIc: interaction.fields.getTextInputValue("nombre_ic"),
     nombreOoc: interaction.fields.getTextInputValue("nombre_ooc"),
     edad: interaction.fields.getTextInputValue("edad"),
@@ -1458,7 +1559,7 @@ async function manejarPostulacion(interaction) {
     app.ticketChannelId = channel.id;
     app.ticketMessageId = message.id;
     data.applications[id] = app;
-    touchEmpleado(data, app.userId, app.nombreIc || app.displayName);
+    touchEmpleado(data, app.userId, app.nombreIc || app.displayName, { avatarURL: app.avatarURL || null });
     guardarDatos(data);
 
     await enviarLog(`📨 **Nueva postulación** · ${app.nombreIc} (<@${app.userId}>) · Ticket: <#${channel.id}>`);
@@ -1507,12 +1608,19 @@ async function manejarDecisionPostulacion(interaction, appId, accion) {
           detalleRoles += `\n⚠️ No pude asignar <@&${roleId}>: ${error.message}`;
         });
       }
+      for (const roleId of rolesAplicablesPostulante()) {
+        if (member.roles.cache.has(roleId)) {
+          await member.roles.remove(roleId).catch(error => {
+            detalleRoles += `\n⚠️ No pude quitar <@&${roleId}>: ${error.message}`;
+          });
+        }
+      }
       if (config.APPLICATION_CHANGE_NICKNAME && app.nombreIc) {
         await member.setNickname(app.nombreIc).catch(error => {
           detalleRoles += `\n⚠️ No pude cambiar el apodo: ${error.message}`;
         });
       }
-      touchEmpleado(data, app.userId, app.nombreIc || app.displayName);
+      touchEmpleado(data, app.userId, app.nombreIc || app.displayName, { avatarURL: app.avatarURL || null });
     } catch (error) {
       detalleRoles += `\n⚠️ No pude encontrar/asignar al usuario: ${error.message}`;
     }
@@ -1538,6 +1646,86 @@ async function manejarDecisionPostulacion(interaction, appId, accion) {
   }
 }
 
+async function manejarCerrarTicketPostulacion(interaction, appId) {
+  const data = cargarDatos();
+  const app = data.applications?.[appId];
+  const esCreador = app?.userId === interaction.user.id;
+  if (!esCreador && !puedeRevisarPostulaciones(interaction)) return sinPermiso(interaction);
+  await interaction.reply(respuestaPrivada({ content: "Ticket cerrado. Se eliminará el canal en unos segundos." })).catch(() => {});
+  await enviarLog(`🗑️ **Ticket de postulación cerrado** · ${app?.nombreIc || "sin datos"} · Por ${nombreMiembro(interaction)}`);
+  if (interaction.channel?.deletable) {
+    setTimeout(() => interaction.channel.delete(`Ticket de postulación cerrado por ${nombreMiembro(interaction)}`).catch(() => {}), 3000);
+  }
+}
+
+async function enviarBienvenida(member) {
+  const data = cargarDatos();
+  const roleIds = rolesAplicablesPostulante();
+  const asignados = [];
+  for (const roleId of roleIds) {
+    try {
+      await member.roles.add(roleId, "Rol automático al entrar al servidor");
+      asignados.push(roleId);
+    } catch (error) {
+      console.warn(`No se pudo asignar rol de entrada ${roleId} a ${member.user?.tag || member.id}:`, error.message);
+    }
+  }
+
+  touchEmpleado(data, member.id, nombreDesdeMember(member), { avatarURL: avatarUsuario(member) });
+  guardarDatos(data);
+
+  const channelId = config.CHANNELS.WELCOME || config.CHANNELS.POSTULANTES || config.CHANNELS.LOGS;
+  if (!channelId) return;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) return;
+  await channel.send({
+    embeds: [new EmbedBuilder()
+      .setColor(COLOR_TOPGEAR_GREEN)
+      .setTitle("Bienvenido/a a Top Gear")
+      .setDescription(`Bienvenido/a ${member}.
+
+Pásate por postulaciones para crear tu solicitud.`)
+      .setThumbnail(avatarUsuario(member))
+      .setTimestamp()
+    ]
+  }).catch(error => console.warn("No se pudo enviar bienvenida:", error.message));
+}
+
+async function registrarSalidaMiembro(member) {
+  const data = cargarDatos();
+  const userId = member.id;
+  const displayName = data.employees?.[userId]?.displayName || nombreDesdeMember(member);
+  const roleIds = member.roles?.cache ? member.roles.cache.filter(role => role.id !== member.guild.id).map(role => role.id) : [];
+  const roleNames = member.roles?.cache ? member.roles.cache.filter(role => role.id !== member.guild.id).map(role => role.name) : [];
+
+  data.formerMembers[userId] = {
+    userId,
+    displayName,
+    avatarURL: data.employees?.[userId]?.avatarURL || avatarUsuario(member),
+    roleIds,
+    roleNames,
+    leftAt: new Date().toISOString()
+  };
+  delete data.openShifts[userId];
+
+  if (config.REMOVE_EMPLOYEE_ON_LEAVE) {
+    delete data.employees[userId];
+  }
+  guardarDatos(data);
+
+  const channelId = config.CHANNELS.GOODBYE || config.CHANNELS.LOGS;
+  if (!channelId) return;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased()) return;
+  await channel.send({
+    embeds: [new EmbedBuilder()
+      .setColor(COLOR_WARNING_RED)
+      .setTitle("Salida del servidor")
+      .setDescription(`**${displayName}** ha salido del servidor.`)
+      .setTimestamp()
+    ]
+  }).catch(() => {});
+}
 
 client.once(Events.ClientReady, async () => {
   logDatos();
@@ -1551,6 +1739,15 @@ client.once(Events.ClientReady, async () => {
   } else {
     console.log("AUTO_PUBLISH_PANELS=false. No se publican paneles al iniciar. Usa /paneles para publicarlos manualmente.");
   }
+});
+
+
+client.on(Events.GuildMemberAdd, async member => {
+  await enviarBienvenida(member).catch(error => console.error("Error en bienvenida:", error));
+});
+
+client.on(Events.GuildMemberRemove, async member => {
+  await registrarSalidaMiembro(member).catch(error => console.error("Error registrando salida:", error));
 });
 
 client.on(Events.InteractionCreate, async interaction => {
@@ -1591,11 +1788,11 @@ client.on(Events.InteractionCreate, async interaction => {
       if (id === `${PREFIX}:pagos:consultar`) {
         if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
         const data = cargarDatos();
-        const components = crearOpcionesConsultaPagos(data);
+        const { rows: components, empleados } = await crearOpcionesConsultaPagos(interaction, data);
         return interaction.reply(respuestaPrivada({
-          content: empleadosParaSelector(data).length
+          content: empleados.length
             ? "Elige qué quieres consultar:"
-            : "No hay empleados registrados todavía. Cuando alguien fiche entrada o sea aceptado, aparecerá aquí.",
+            : "No hay empleados con los roles configurados todavía.",
           components
         }));
       }
@@ -1603,11 +1800,11 @@ client.on(Events.InteractionCreate, async interaction => {
       if (id === `${PREFIX}:pagos:modificar`) {
         if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
         const data = cargarDatos();
-        const components = crearSelectorModificarHoras(data);
+        const { rows: components, empleados } = await crearSelectorModificarHoras(interaction, data);
         return interaction.reply(respuestaPrivada({
           content: components.length
             ? "Selecciona el empleado al que quieres modificar horas:"
-            : "No hay empleados registrados todavía. Cuando alguien fiche entrada o sea aceptado, aparecerá aquí.",
+            : "No hay empleados con los roles configurados todavía.",
           components
         }));
       }
@@ -1653,6 +1850,10 @@ client.on(Events.InteractionCreate, async interaction => {
       if (id.startsWith(`${PREFIX}:app:denegar:`)) {
         return manejarDecisionPostulacion(interaction, id.replace(`${PREFIX}:app:denegar:`, ""), "denegar");
       }
+
+      if (id.startsWith(`${PREFIX}:app:cerrar:`)) {
+        return manejarCerrarTicketPostulacion(interaction, id.replace(`${PREFIX}:app:cerrar:`, ""));
+      }
     }
 
     if (interaction.isUserSelectMenu?.()) {
@@ -1666,10 +1867,11 @@ client.on(Events.InteractionCreate, async interaction => {
           const member = await interaction.guild?.members.fetch(userId);
           if (member?.displayName) displayName = member.displayName;
         } catch {}
-        touchEmpleado(data, userId, displayName);
+        touchEmpleado(data, userId, displayName, { avatarURL: avatarUsuario(interaction.guild?.members?.cache?.get(userId)) });
         guardarDatos(data);
+        const empleado = data.employees?.[userId];
         return interaction.reply(respuestaPrivada({
-          content: `Empleado seleccionado: <@${userId}>. Elige el periodo:`,
+          content: `Empleado seleccionado: **${empleado?.displayName || "Empleado"}**. Elige el periodo:`,
           components: crearOpcionesRangoEmpleado(userId)
         }));
       }
@@ -1689,8 +1891,18 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
         const userId = interaction.values?.[0];
         if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        const data = cargarDatos();
+        let displayName = data.employees?.[userId]?.displayName || "Empleado";
+        let avatarURL = data.employees?.[userId]?.avatarURL || null;
+        const member = await obtenerMiembroSeguro(interaction.guild, userId);
+        if (member) {
+          displayName = nombreDesdeMember(member);
+          avatarURL = avatarUsuario(member);
+        }
+        touchEmpleado(data, userId, displayName, { avatarURL });
+        guardarDatos(data);
         return interaction.reply(respuestaPrivada({
-          content: `Empleado seleccionado: <@${userId}>. Elige el periodo:`,
+          content: `Empleado seleccionado: **${displayName}**. Elige el periodo:`,
           components: crearOpcionesRangoEmpleado(userId)
         }));
       }
@@ -1699,6 +1911,12 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
         const userId = interaction.values?.[0];
         if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        const data = cargarDatos();
+        const member = await obtenerMiembroSeguro(interaction.guild, userId);
+        if (member) {
+          touchEmpleado(data, userId, nombreDesdeMember(member), { avatarURL: avatarUsuario(member) });
+          guardarDatos(data);
+        }
         return interaction.showModal(crearModalModificarHorasEmpleado(userId));
       }
     }
