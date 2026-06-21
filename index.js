@@ -638,7 +638,7 @@ function crearEmbedCalculadora() {
 function crearBotonesCalculadora() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("Abrir calculadora").setEmoji("🖩").setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("Abrir calculadora").setEmoji("🧮").setStyle(ButtonStyle.Success)
     )
   ];
 }
