@@ -12,6 +12,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "discord.js": "^14.17.3"
+    "discord.js": "^14.17.3",
+    "express": "^4.18.3"
   }
 }
