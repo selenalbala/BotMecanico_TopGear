@@ -21,6 +21,7 @@ const {
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
+const { iniciarWeb } = require("./web");
 
 const calcSessions = new Map();
 const employeeGuildCache = new Map();
@@ -2330,5 +2331,7 @@ if (!config.TOKEN) {
   console.error("Falta DISCORD_TOKEN. Créalo en Railway > Variables.");
   process.exit(1);
 }
+
+iniciarWeb();
 
 client.login(config.TOKEN);
