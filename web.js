@@ -66,7 +66,7 @@ function itemsCalculadora() {
 
 function crearStockInicial() {
   return {
-    version: 1,
+    version: 2,
     items: {},
     movements: [],
     createdAt: new Date().toISOString(),
@@ -81,7 +81,7 @@ function stockFilePath() {
 function normalizarStock(raw) {
   const data = raw && typeof raw === "object" ? raw : crearStockInicial();
 
-  data.version = 1;
+  data.version = 2;
   data.items = data.items && typeof data.items === "object" && !Array.isArray(data.items) ? data.items : {};
   data.movements = Array.isArray(data.movements) ? data.movements : [];
 
@@ -124,11 +124,18 @@ function requierePin() {
 function validarPin(req) {
   const expected = env("WEB_ADMIN_PIN", "");
   if (!expected) return true;
-  const provided = String(req.headers["x-admin-pin"] || req.body?.pin || "").trim();
+
+  const provided = String(
+    req.headers["x-admin-pin"] ||
+    req.body?.pin ||
+    req.query?.pin ||
+    ""
+  ).trim();
+
   return provided === expected;
 }
 
-function stockPublico(data) {
+function datosStockPublico(data) {
   const result = {};
 
   for (const [itemId, info] of Object.entries(data.items || {})) {
@@ -148,7 +155,7 @@ function datosPublicos() {
     currencySuffix: config.CURRENCY_SUFFIX || "$",
     discounts: config.CALCULATOR_DISCOUNTS?.length ? config.CALCULATOR_DISCOUNTS : [0, 5, 10, 15],
     items: itemsCalculadora(),
-    stock: stockPublico(stock),
+    stock: datosStockPublico(stock),
     stockRequiresPin: requierePin()
   };
 }
@@ -175,7 +182,7 @@ function validarSeleccion(body) {
 
     if (!item) return { error: "Uno de los servicios no existe." };
     if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 999) {
-      return { error: `La cantidad de ${item.label} no es válida.` };
+      return { error: `La cantidad de ${item?.label || "un servicio"} no es válida.` };
     }
 
     lines.push({
@@ -211,10 +218,10 @@ function comprobarStockDisponible(stockData, lines) {
   return { ok: true };
 }
 
-function descontarStock(stockData, lines) {
+function descontarStock(stockData, parsed) {
   const now = new Date().toISOString();
 
-  for (const line of lines) {
+  for (const line of parsed.lines) {
     const info = stockData.items?.[line.id];
     if (!info || info.stock === null) continue;
 
@@ -226,11 +233,97 @@ function descontarStock(stockData, lines) {
     id: `send_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     type: "send",
     createdAt: now,
-    lines
+    discount: parsed.discount,
+    subtotal: parsed.subtotal,
+    total: parsed.total,
+    lines: parsed.lines
   });
 
-  stockData.movements = stockData.movements.slice(0, 300);
+  stockData.movements = stockData.movements.slice(0, 500);
   stockData.updatedAt = now;
+}
+
+function calcularConsumo(data, itemId, dias) {
+  const fromMs = Date.now() - dias * 24 * 60 * 60 * 1000;
+  let total = 0;
+
+  for (const movement of data.movements || []) {
+    if (movement.type !== "send") continue;
+
+    const createdMs = new Date(movement.createdAt || 0).getTime();
+    if (!Number.isFinite(createdMs) || createdMs < fromMs) continue;
+
+    for (const line of movement.lines || []) {
+      if (line.id === itemId) {
+        total += Math.max(0, Math.floor(Number(line.quantity) || 0));
+      }
+    }
+  }
+
+  return total;
+}
+
+function calcularEntradas(data, itemId, dias) {
+  const fromMs = Date.now() - dias * 24 * 60 * 60 * 1000;
+  let total = 0;
+
+  for (const movement of data.movements || []) {
+    if (movement.type !== "order") continue;
+
+    const createdMs = new Date(movement.createdAt || 0).getTime();
+    if (!Number.isFinite(createdMs) || createdMs < fromMs) continue;
+
+    if (movement.itemId === itemId) {
+      total += Math.max(0, Math.floor(Number(movement.quantity) || 0));
+    }
+  }
+
+  return total;
+}
+
+function resumenAdminStock() {
+  const data = cargarStock();
+  const items = itemsCalculadora();
+
+  const rows = items.map(item => {
+    const info = data.items[item.id] || { stock: null };
+    const stock = info.stock === null ? null : Math.max(0, Math.floor(Number(info.stock) || 0));
+    const consumed7 = calcularConsumo(data, item.id, 7);
+    const consumed30 = calcularConsumo(data, item.id, 30);
+    const ordered7 = calcularEntradas(data, item.id, 7);
+    const safetyMin = Math.ceil(consumed7 * 1.30);
+    const suggestedOrder = stock === null ? null : Math.max(0, safetyMin - stock);
+
+    return {
+      id: item.id,
+      label: item.label,
+      price: item.price,
+      stock,
+      updatedAt: info.updatedAt || null,
+      consumed7,
+      consumed30,
+      ordered7,
+      safetyMin,
+      suggestedOrder,
+      status: stock === null ? "unlimited" : (stock < safetyMin ? "low" : "ok")
+    };
+  });
+
+  const movements = (data.movements || []).slice(0, 50);
+
+  return {
+    currencySuffix: config.CURRENCY_SUFFIX || "$",
+    requiresPin: requierePin(),
+    items: rows,
+    movements,
+    updatedAt: data.updatedAt || null
+  };
+}
+
+function validarItemId(itemId) {
+  const id = normalizarItemId(itemId);
+  const validIds = new Set(itemsCalculadora().map(item => item.id));
+  return validIds.has(id) ? id : "";
 }
 
 function iniciarWeb() {
@@ -265,7 +358,7 @@ function iniciarWeb() {
       return res.status(400).json({ ok: false, error: check.error });
     }
 
-    descontarStock(stockData, parsed.lines);
+    descontarStock(stockData, parsed);
     guardarStock(stockData);
 
     res.json({
@@ -278,17 +371,32 @@ function iniciarWeb() {
     });
   });
 
-  app.post("/api/stock/update", (req, res) => {
+  app.post("/api/admin/login", (req, res) => {
     if (!validarPin(req)) {
-      return res.status(401).json({ ok: false, error: "PIN de administración incorrecto." });
+      return res.status(401).json({ ok: false, error: "PIN incorrecto." });
     }
 
-    const itemId = normalizarItemId(req.body?.itemId);
+    res.json({ ok: true });
+  });
+
+  app.get("/api/admin/stock", (req, res) => {
+    if (!validarPin(req)) {
+      return res.status(401).json({ ok: false, error: "PIN incorrecto." });
+    }
+
+    res.json({ ok: true, data: resumenAdminStock() });
+  });
+
+  app.post("/api/admin/stock/update", (req, res) => {
+    if (!validarPin(req)) {
+      return res.status(401).json({ ok: false, error: "PIN incorrecto." });
+    }
+
+    const itemId = validarItemId(req.body?.itemId);
     const action = String(req.body?.action || "").trim().toLowerCase();
     const quantity = Math.floor(Number(req.body?.quantity || 0));
-    const validIds = new Set(itemsCalculadora().map(item => item.id));
 
-    if (!validIds.has(itemId)) {
+    if (!itemId) {
       return res.status(400).json({ ok: false, error: "Servicio no válido." });
     }
 
@@ -309,26 +417,81 @@ function iniciarWeb() {
     }
 
     info.updatedAt = now;
+
+    data.movements.unshift({
+      id: `adjust_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: action === "unlimited" ? "unlimited" : "adjust",
+      itemId,
+      label: info.label,
+      quantity: action === "unlimited" ? null : info.stock,
+      createdAt: now
+    });
+
+    data.movements = data.movements.slice(0, 500);
     data.updatedAt = now;
     guardarStock(data);
 
-    res.json({ ok: true, data: datosPublicos() });
+    res.json({ ok: true, data: resumenAdminStock(), publicData: datosPublicos() });
   });
 
-  app.get("/", (req, res) => {
-    const initialData = JSON.stringify(datosPublicos()).replace(/</g, "\\u003c");
+  app.post("/api/admin/orders/add", (req, res) => {
+    if (!validarPin(req)) {
+      return res.status(401).json({ ok: false, error: "PIN incorrecto." });
+    }
+
+    const itemId = validarItemId(req.body?.itemId);
+    const quantity = Math.floor(Number(req.body?.quantity || 0));
+    const note = String(req.body?.note || "").trim().slice(0, 180);
+
+    if (!itemId) {
+      return res.status(400).json({ ok: false, error: "Servicio no válido." });
+    }
+
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 999999) {
+      return res.status(400).json({ ok: false, error: "Cantidad de pedido no válida." });
+    }
+
+    const data = cargarStock();
+    const info = data.items[itemId];
+    const now = new Date().toISOString();
+
+    if (info.stock === null) info.stock = 0;
+    info.stock = Math.floor((Number(info.stock) || 0) + quantity);
+    info.updatedAt = now;
+
+    data.movements.unshift({
+      id: `order_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: "order",
+      itemId,
+      label: info.label,
+      quantity,
+      note,
+      createdAt: now
+    });
+
+    data.movements = data.movements.slice(0, 500);
+    data.updatedAt = now;
+    guardarStock(data);
+
+    res.json({ ok: true, message: "Pedido registrado. Stock actualizado.", data: resumenAdminStock(), publicData: datosPublicos() });
+  });
+
+  app.get("/stock", (req, res) => {
+    const initial = JSON.stringify({
+      requiresPin: requierePin(),
+      items: itemsCalculadora()
+    }).replace(/</g, "\\u003c");
 
     res.send(`<!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Top Gear | Calculadora</title>
-
+  <title>Top Gear | Control de stock</title>
   <style>
     :root {
       --bg: #050807;
-      --panel: rgba(15, 24, 19, .86);
+      --panel: rgba(15, 24, 19, .88);
       --border: rgba(255,255,255,.10);
       --border-strong: rgba(0,184,116,.40);
       --text: #f6fff9;
@@ -372,7 +535,8 @@ function iniciarWeb() {
     }
 
     button,
-    input {
+    input,
+    select {
       font: inherit;
     }
 
@@ -390,6 +554,893 @@ function iniciarWeb() {
     button:disabled {
       opacity: .45;
       cursor: not-allowed;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .page {
+      width: min(1280px, 100%);
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 26px;
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .eyebrow {
+      margin: 0;
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 950;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(34px, 5vw, 56px);
+      line-height: .95;
+      letter-spacing: -.055em;
+    }
+
+    .subtitle {
+      width: min(820px, 100%);
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.6;
+    }
+
+    .nav-button {
+      min-height: 44px;
+      border-radius: 14px;
+      padding: 0 16px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid var(--border);
+      color: var(--text);
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, var(--panel), rgba(9,14,11,.82));
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      backdrop-filter: blur(18px);
+      margin-bottom: 22px;
+    }
+
+    .card-header {
+      padding: 22px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .card-header h2 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: -.02em;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+      margin-top: 6px;
+    }
+
+    .body {
+      padding: 22px;
+    }
+
+    .login {
+      width: min(520px, 100%);
+      margin: 40px auto;
+    }
+
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .input,
+    .select {
+      width: 100%;
+      min-height: 46px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.055);
+      color: var(--text);
+      padding: 0 14px;
+      outline: none;
+    }
+
+    .select option {
+      color: #0b120e;
+    }
+
+    .input:focus,
+    .select:focus {
+      border-color: rgba(0,184,116,.55);
+    }
+
+    .primary {
+      min-height: 48px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, var(--green), var(--green-2));
+      color: white;
+    }
+
+    .secondary {
+      min-height: 44px;
+      border-radius: 14px;
+      color: var(--text);
+      background: var(--button);
+      border: 1px solid var(--border);
+      padding: 0 16px;
+    }
+
+    .danger {
+      min-height: 44px;
+      border-radius: 14px;
+      background: var(--red-soft);
+      color: #ffd4d4;
+      border: 1px solid rgba(192,23,24,.35);
+      padding: 0 16px;
+    }
+
+    .dashboard {
+      display: none;
+    }
+
+    .dashboard.open {
+      display: block;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+
+    .stat {
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: rgba(255,255,255,.04);
+      padding: 18px;
+    }
+
+    .stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 28px;
+      letter-spacing: -.045em;
+    }
+
+    .order-grid {
+      display: grid;
+      grid-template-columns: 1.2fr .5fr 1fr auto;
+      gap: 12px;
+      align-items: end;
+    }
+
+    .table-wrap {
+      overflow: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0 10px;
+      min-width: 980px;
+    }
+
+    th {
+      text-align: left;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 850;
+      padding: 0 12px;
+    }
+
+    td {
+      background: rgba(255,255,255,.04);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      padding: 12px;
+      vertical-align: middle;
+    }
+
+    td:first-child {
+      border-left: 1px solid var(--border);
+      border-top-left-radius: 16px;
+      border-bottom-left-radius: 16px;
+    }
+
+    td:last-child {
+      border-right: 1px solid var(--border);
+      border-top-right-radius: 16px;
+      border-bottom-right-radius: 16px;
+    }
+
+    .name {
+      font-weight: 900;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 30px;
+      border-radius: 999px;
+      padding: 0 10px;
+      font-size: 13px;
+      font-weight: 850;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.055);
+    }
+
+    .pill.ok {
+      color: #d6ffed;
+      border-color: rgba(0,184,116,.32);
+      background: rgba(0,184,116,.12);
+    }
+
+    .pill.low {
+      color: #ffd6d6;
+      border-color: rgba(192,23,24,.34);
+      background: rgba(192,23,24,.13);
+    }
+
+    .row-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      min-width: 180px;
+    }
+
+    .message {
+      margin-top: 14px;
+      display: none;
+      border-radius: 16px;
+      padding: 13px 14px;
+      line-height: 1.45;
+      font-size: 14px;
+    }
+
+    .message.ok {
+      display: block;
+      color: #d6ffed;
+      background: rgba(0,184,116,.13);
+      border: 1px solid rgba(0,184,116,.32);
+    }
+
+    .message.error {
+      display: block;
+      color: #ffd6d6;
+      background: rgba(192,23,24,.13);
+      border: 1px solid rgba(192,23,24,.32);
+    }
+
+    .history {
+      display: grid;
+      gap: 10px;
+    }
+
+    .history-item {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: rgba(255,255,255,.035);
+      padding: 12px;
+    }
+
+    .history-title {
+      font-weight: 900;
+    }
+
+    .history-text {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 5px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 980px) {
+      body {
+        padding: 18px;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .order-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .stats {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="page">
+    <div class="topbar">
+      <div class="brand">
+        <p class="eyebrow">Top Gear</p>
+        <h1>Control de stock</h1>
+        <p class="subtitle">Registra los pedidos que haces, actualiza el stock y calcula el mínimo recomendado con un 30% de margen.</p>
+      </div>
+
+      <a class="nav-button" href="/">Volver a la calculadora</a>
+    </div>
+
+    <section class="card login" id="loginCard">
+      <div class="card-header">
+        <div>
+          <h2>Acceso</h2>
+          <div class="hint">Introduce el PIN de administración para modificar el stock.</div>
+        </div>
+      </div>
+
+      <div class="body grid">
+        <input id="pinInput" class="input" type="password" placeholder="PIN de administración" />
+        <button id="loginBtn" class="primary">Entrar</button>
+        <div id="loginMessage" class="message"></div>
+      </div>
+    </section>
+
+    <section id="dashboard" class="dashboard">
+      <div class="stats">
+        <div class="stat">
+          <span>Servicios controlados</span>
+          <strong id="statItems">0</strong>
+        </div>
+        <div class="stat">
+          <span>Stock bajo</span>
+          <strong id="statLow">0</strong>
+        </div>
+        <div class="stat">
+          <span>Unidades a pedir</span>
+          <strong id="statOrder">0</strong>
+        </div>
+        <div class="stat">
+          <span>Consumo 7 días</span>
+          <strong id="statConsumed">0</strong>
+        </div>
+      </div>
+
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <h2>Registrar pedido</h2>
+            <div class="hint">Añade aquí lo que has comprado. La cantidad se suma al stock actual.</div>
+          </div>
+        </div>
+
+        <div class="body">
+          <div class="order-grid">
+            <select id="orderItem" class="select"></select>
+            <input id="orderQuantity" class="input" type="number" min="1" placeholder="Cantidad" />
+            <input id="orderNote" class="input" placeholder="Nota opcional" />
+            <button id="orderBtn" class="primary">Añadir al stock</button>
+          </div>
+          <div id="orderMessage" class="message"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <h2>Stock y recomendación semanal</h2>
+            <div class="hint">Mínimo recomendado = consumo de los últimos 7 días + 30%. Pedir = mínimo recomendado - stock actual.</div>
+          </div>
+          <button id="refreshBtn" class="secondary">Actualizar</button>
+        </div>
+
+        <div class="body table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Servicio</th>
+                <th>Stock actual</th>
+                <th>Consumo 7 días</th>
+                <th>Mínimo +30%</th>
+                <th>Pedir semana siguiente</th>
+                <th>Editar stock</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody id="stockRows"></tbody>
+          </table>
+          <div id="stockMessage" class="message"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <div>
+            <h2>Últimos movimientos</h2>
+            <div class="hint">Entradas por pedidos, ajustes manuales y salidas al pulsar Enviar en la calculadora.</div>
+          </div>
+        </div>
+
+        <div class="body">
+          <div id="history" class="history"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const INITIAL = ${initial};
+    let DATA = null;
+    let PIN = localStorage.getItem("topgear_stock_pin") || "";
+
+    const loginCard = document.getElementById("loginCard");
+    const dashboard = document.getElementById("dashboard");
+    const pinInput = document.getElementById("pinInput");
+    const loginBtn = document.getElementById("loginBtn");
+    const loginMessage = document.getElementById("loginMessage");
+
+    const statItems = document.getElementById("statItems");
+    const statLow = document.getElementById("statLow");
+    const statOrder = document.getElementById("statOrder");
+    const statConsumed = document.getElementById("statConsumed");
+
+    const orderItem = document.getElementById("orderItem");
+    const orderQuantity = document.getElementById("orderQuantity");
+    const orderNote = document.getElementById("orderNote");
+    const orderBtn = document.getElementById("orderBtn");
+    const orderMessage = document.getElementById("orderMessage");
+
+    const refreshBtn = document.getElementById("refreshBtn");
+    const stockRows = document.getElementById("stockRows");
+    const stockMessage = document.getElementById("stockMessage");
+    const historyEl = document.getElementById("history");
+
+    function setMessage(el, type, text) {
+      el.className = "message" + (type ? " " + type : "");
+      el.textContent = text || "";
+      el.style.display = text ? "block" : "none";
+    }
+
+    function money(value) {
+      return new Intl.NumberFormat("es-ES").format(Math.round(Number(value) || 0)) + ((DATA && DATA.currencySuffix) || "$");
+    }
+
+    function fmtDate(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      return date.toLocaleString("es-ES", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+    }
+
+    function statusLabel(item) {
+      if (item.status === "unlimited") return "Sin límite";
+      if (item.status === "low") return "Stock bajo";
+      return "Correcto";
+    }
+
+    function renderOrderOptions() {
+      orderItem.innerHTML = "";
+
+      (DATA.items || []).forEach(function(item) {
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = item.label;
+        orderItem.appendChild(option);
+      });
+    }
+
+    function renderStats() {
+      const items = DATA.items || [];
+      const controlled = items.filter(function(item) { return item.stock !== null; }).length;
+      const low = items.filter(function(item) { return item.status === "low"; }).length;
+      const toOrder = items.reduce(function(acc, item) { return acc + (Number(item.suggestedOrder) || 0); }, 0);
+      const consumed = items.reduce(function(acc, item) { return acc + (Number(item.consumed7) || 0); }, 0);
+
+      statItems.textContent = controlled;
+      statLow.textContent = low;
+      statOrder.textContent = toOrder;
+      statConsumed.textContent = consumed;
+    }
+
+    function renderRows() {
+      stockRows.innerHTML = "";
+
+      (DATA.items || []).forEach(function(item) {
+        const tr = document.createElement("tr");
+
+        const serviceTd = document.createElement("td");
+        const name = document.createElement("div");
+        name.className = "name";
+        name.textContent = item.label;
+        const price = document.createElement("div");
+        price.className = "muted";
+        price.textContent = money(item.price);
+        serviceTd.appendChild(name);
+        serviceTd.appendChild(price);
+
+        const stockTd = document.createElement("td");
+        stockTd.textContent = item.stock === null ? "Sin límite" : String(item.stock);
+
+        const consumedTd = document.createElement("td");
+        consumedTd.textContent = String(item.consumed7);
+
+        const minTd = document.createElement("td");
+        minTd.textContent = item.stock === null ? "-" : String(item.safetyMin);
+
+        const orderTd = document.createElement("td");
+        orderTd.textContent = item.stock === null ? "-" : String(item.suggestedOrder);
+
+        const editTd = document.createElement("td");
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+
+        const input = document.createElement("input");
+        input.className = "input";
+        input.type = "number";
+        input.min = "0";
+        input.value = item.stock === null ? "" : String(item.stock);
+        input.placeholder = "Stock";
+
+        const saveBtn = document.createElement("button");
+        saveBtn.className = "primary";
+        saveBtn.textContent = "Guardar";
+        saveBtn.onclick = function() {
+          updateStock(item.id, "set", Number(input.value || 0));
+        };
+
+        const unlimitedBtn = document.createElement("button");
+        unlimitedBtn.className = "danger";
+        unlimitedBtn.textContent = "Sin límite";
+        unlimitedBtn.onclick = function() {
+          updateStock(item.id, "unlimited", 0);
+        };
+
+        actions.appendChild(saveBtn);
+        actions.appendChild(unlimitedBtn);
+        editTd.appendChild(input);
+        editTd.appendChild(actions);
+
+        const statusTd = document.createElement("td");
+        const pill = document.createElement("span");
+        pill.className = "pill " + (item.status === "low" ? "low" : "ok");
+        pill.textContent = statusLabel(item);
+        statusTd.appendChild(pill);
+
+        tr.appendChild(serviceTd);
+        tr.appendChild(stockTd);
+        tr.appendChild(consumedTd);
+        tr.appendChild(minTd);
+        tr.appendChild(orderTd);
+        tr.appendChild(editTd);
+        tr.appendChild(statusTd);
+
+        stockRows.appendChild(tr);
+      });
+    }
+
+    function movementText(movement) {
+      if (movement.type === "order") {
+        return "Pedido registrado: " + movement.label + " +" + movement.quantity + (movement.note ? " · " + movement.note : "");
+      }
+
+      if (movement.type === "send") {
+        const lines = (movement.lines || []).map(function(line) {
+          return line.label + " x" + line.quantity;
+        }).join(", ");
+
+        return "Salida por Enviar: " + lines;
+      }
+
+      if (movement.type === "adjust") {
+        return "Ajuste manual: " + movement.label + " = " + movement.quantity;
+      }
+
+      if (movement.type === "unlimited") {
+        return "Marcado como sin límite: " + movement.label;
+      }
+
+      return "Movimiento de stock";
+    }
+
+    function renderHistory() {
+      historyEl.innerHTML = "";
+
+      const movements = DATA.movements || [];
+
+      if (!movements.length) {
+        const empty = document.createElement("div");
+        empty.className = "history-item";
+        empty.textContent = "Todavía no hay movimientos.";
+        historyEl.appendChild(empty);
+        return;
+      }
+
+      movements.slice(0, 30).forEach(function(movement) {
+        const item = document.createElement("div");
+        item.className = "history-item";
+
+        const title = document.createElement("div");
+        title.className = "history-title";
+        title.textContent = movementText(movement);
+
+        const text = document.createElement("div");
+        text.className = "history-text";
+        text.textContent = fmtDate(movement.createdAt);
+
+        item.appendChild(title);
+        item.appendChild(text);
+        historyEl.appendChild(item);
+      });
+    }
+
+    function render() {
+      renderOrderOptions();
+      renderStats();
+      renderRows();
+      renderHistory();
+    }
+
+    async function loadAdminData() {
+      const response = await fetch("/api/admin/stock", {
+        headers: {
+          "x-admin-pin": PIN
+        }
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.ok) {
+        localStorage.removeItem("topgear_stock_pin");
+        throw new Error(result.error || "No se pudo cargar el stock.");
+      }
+
+      DATA = result.data;
+      loginCard.style.display = "none";
+      dashboard.classList.add("open");
+      render();
+    }
+
+    async function login() {
+      try {
+        setMessage(loginMessage, "", "");
+        PIN = pinInput.value || "";
+
+        const response = await fetch("/api/admin/login", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            pin: PIN
+          })
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || "PIN incorrecto.");
+        }
+
+        localStorage.setItem("topgear_stock_pin", PIN);
+        await loadAdminData();
+      } catch (error) {
+        setMessage(loginMessage, "error", error.message || "No se pudo iniciar sesión.");
+      }
+    }
+
+    async function updateStock(itemId, action, quantity) {
+      try {
+        setMessage(stockMessage, "", "");
+
+        const response = await fetch("/api/admin/stock/update", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-pin": PIN
+          },
+          body: JSON.stringify({
+            itemId: itemId,
+            action: action,
+            quantity: quantity
+          })
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || "No se pudo actualizar el stock.");
+        }
+
+        DATA = result.data;
+        setMessage(stockMessage, "ok", "Stock actualizado correctamente.");
+        render();
+      } catch (error) {
+        setMessage(stockMessage, "error", error.message || "No se pudo actualizar el stock.");
+      }
+    }
+
+    async function addOrder() {
+      try {
+        setMessage(orderMessage, "", "");
+
+        const response = await fetch("/api/admin/orders/add", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-pin": PIN
+          },
+          body: JSON.stringify({
+            itemId: orderItem.value,
+            quantity: Number(orderQuantity.value || 0),
+            note: orderNote.value || ""
+          })
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || "No se pudo registrar el pedido.");
+        }
+
+        DATA = result.data;
+        orderQuantity.value = "";
+        orderNote.value = "";
+        setMessage(orderMessage, "ok", result.message || "Pedido registrado. Stock actualizado.");
+        render();
+      } catch (error) {
+        setMessage(orderMessage, "error", error.message || "No se pudo registrar el pedido.");
+      }
+    }
+
+    loginBtn.onclick = login;
+    orderBtn.onclick = addOrder;
+    refreshBtn.onclick = loadAdminData;
+
+    pinInput.addEventListener("keydown", function(event) {
+      if (event.key === "Enter") login();
+    });
+
+    orderQuantity.addEventListener("keydown", function(event) {
+      if (event.key === "Enter") addOrder();
+    });
+
+    if (!INITIAL.requiresPin) {
+      PIN = "";
+      loadAdminData().catch(function(error) {
+        setMessage(loginMessage, "error", error.message || "No se pudo cargar el stock.");
+      });
+    } else if (PIN) {
+      pinInput.value = PIN;
+      loadAdminData().catch(function() {
+        loginCard.style.display = "block";
+        dashboard.classList.remove("open");
+      });
+    }
+  </script>
+</body>
+</html>`);
+  });
+
+  app.get("/", (req, res) => {
+    const initialData = JSON.stringify(datosPublicos()).replace(/</g, "\\u003c");
+
+    res.send(`<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Top Gear | Calculadora</title>
+
+  <style>
+    :root {
+      --bg: #050807;
+      --panel: rgba(15, 24, 19, .86);
+      --border: rgba(255,255,255,.10);
+      --border-strong: rgba(0,184,116,.40);
+      --text: #f6fff9;
+      --muted: #9fb1a8;
+      --muted-2: #6f8178;
+      --green: #00b875;
+      --green-2: #087d53;
+      --red: #c01718;
+      --red-soft: rgba(192,23,24,.14);
+      --button: #223127;
+      --shadow: 0 28px 90px rgba(0,0,0,.45);
+      --radius: 24px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 0%, rgba(0,184,116,.28), transparent 30%),
+        radial-gradient(circle at 94% 10%, rgba(0,184,116,.13), transparent 36%),
+        linear-gradient(135deg, #07110c 0%, #040706 58%, #07120d 100%);
+      padding: 32px;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 42px 42px;
+      mask-image: linear-gradient(to bottom, rgba(0,0,0,.75), transparent 80%);
+    }
+
+    button, input { font: inherit; }
+
+    button {
+      border: 0;
+      cursor: pointer;
+      font-weight: 850;
+      transition: transform .12s ease, border-color .12s ease, background .12s ease, opacity .12s ease;
+    }
+
+    button:active { transform: scale(.98); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+
+    a {
+      color: inherit;
+      text-decoration: none;
     }
 
     .page {
@@ -429,6 +1480,25 @@ function iniciarWeb() {
       color: var(--muted);
       font-size: 17px;
       line-height: 1.6;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+
+    .link-button {
+      min-height: 44px;
+      border-radius: 14px;
+      padding: 0 16px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid var(--border);
+      color: var(--text);
+      display: inline-flex;
+      align-items: center;
+      font-weight: 850;
     }
 
     .hero-card {
@@ -723,91 +1793,6 @@ function iniciarWeb() {
       background: rgba(192,23,24,.12);
     }
 
-    .stock-section {
-      margin-top: 24px;
-    }
-
-    .stock-tools {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 10px;
-      width: min(520px, 100%);
-    }
-
-    .input {
-      width: 100%;
-      min-height: 44px;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: rgba(255,255,255,.055);
-      color: var(--text);
-      padding: 0 14px;
-      outline: none;
-    }
-
-    .input:focus {
-      border-color: rgba(0,184,116,.55);
-    }
-
-    .small-button {
-      min-height: 44px;
-      border-radius: 14px;
-      color: var(--text);
-      background: var(--button);
-      border: 1px solid var(--border);
-      padding: 0 16px;
-    }
-
-    .stock-list {
-      padding: 18px;
-      display: grid;
-      gap: 12px;
-    }
-
-    .stock-row {
-      display: grid;
-      grid-template-columns: 1fr 120px 180px 112px;
-      gap: 12px;
-      align-items: center;
-      padding: 14px;
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      background: rgba(255,255,255,.035);
-    }
-
-    .stock-name {
-      font-weight: 900;
-    }
-
-    .stock-current {
-      color: var(--muted);
-      font-weight: 800;
-    }
-
-    .stock-actions {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-
-    .stock-actions button {
-      min-height: 40px;
-      border-radius: 12px;
-      color: white;
-      background: var(--button);
-      border: 1px solid var(--border);
-    }
-
-    .stock-actions button:first-child {
-      background: linear-gradient(135deg, var(--green), var(--green-2));
-    }
-
-    .stock-actions button:last-child {
-      background: var(--red-soft);
-      color: #ffd4d4;
-      border-color: rgba(192,23,24,.34);
-    }
-
     .message {
       margin-top: 14px;
       display: none;
@@ -839,58 +1824,22 @@ function iniciarWeb() {
     }
 
     @media (max-width: 1100px) {
-      .layout {
-        grid-template-columns: 1fr;
-      }
-
-      .summary {
-        position: static;
-      }
-
-      .hero {
-        grid-template-columns: 1fr;
-      }
-
-      .hero-card {
-        width: fit-content;
-      }
+      .layout { grid-template-columns: 1fr; }
+      .summary { position: static; }
+      .hero { grid-template-columns: 1fr; }
+      .hero-card { width: fit-content; }
     }
 
     @media (max-width: 820px) {
-      body {
-        padding: 18px;
-      }
-
-      .services {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
-      .stock-row {
-        grid-template-columns: 1fr;
-      }
-
-      .stock-tools {
-        grid-template-columns: 1fr;
-      }
+      body { padding: 18px; }
+      .services { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
 
     @media (max-width: 560px) {
-      .services {
-        grid-template-columns: 1fr;
-      }
-
-      .card-header {
-        align-items: flex-start;
-        flex-direction: column;
-      }
-
-      .hero-card {
-        width: 100%;
-      }
-
-      .discounts {
-        grid-template-columns: repeat(2, 1fr);
-      }
+      .services { grid-template-columns: 1fr; }
+      .card-header { align-items: flex-start; flex-direction: column; }
+      .hero-card { width: 100%; }
+      .discounts { grid-template-columns: repeat(2, 1fr); }
     }
   </style>
 </head>
@@ -902,6 +1851,9 @@ function iniciarWeb() {
         <p class="eyebrow">Top Gear</p>
         <h1>Calculadora de servicios</h1>
         <p class="subtitle">Selecciona servicios, aplica descuentos y pulsa Enviar para descontar el stock.</p>
+        <div class="hero-actions">
+          <a class="link-button" href="/stock">Control de stock</a>
+        </div>
       </div>
 
       <div class="hero-card">
@@ -956,25 +1908,6 @@ function iniciarWeb() {
       </aside>
     </section>
 
-    <section class="card stock-section">
-      <div class="card-header">
-        <div>
-          <h2>Control de stock</h2>
-          <div class="counter">Pon una cantidad o marca un servicio como sin límite.</div>
-        </div>
-        <div class="stock-tools">
-          <input id="stockPin" class="input" type="password" placeholder="PIN de administración" />
-          <button class="small-button" id="refreshBtn">Actualizar</button>
-        </div>
-      </div>
-
-      <div id="stockList" class="stock-list"></div>
-
-      <div style="padding: 0 18px 18px;">
-        <div id="stockMessage" class="message"></div>
-      </div>
-    </section>
-
     <div class="footer">Top Gear · Calculadora y stock</div>
   </main>
 
@@ -997,11 +1930,7 @@ function iniciarWeb() {
     const sendBtn = document.getElementById("sendBtn");
     const discountsEl = document.getElementById("discounts");
     const itemsCounterEl = document.getElementById("itemsCounter");
-    const stockListEl = document.getElementById("stockList");
-    const stockPinEl = document.getElementById("stockPin");
-    const refreshBtn = document.getElementById("refreshBtn");
     const mainMessageEl = document.getElementById("mainMessage");
-    const stockMessageEl = document.getElementById("stockMessage");
 
     function money(value) {
       return new Intl.NumberFormat("es-ES").format(Math.round(Number(value) || 0)) + (DATA.currencySuffix || "$");
@@ -1212,69 +2141,10 @@ function iniciarWeb() {
       sendBtn.disabled = !t.selected.length;
     }
 
-    function renderStock() {
-      stockListEl.innerHTML = "";
-
-      DATA.items.forEach(function(item) {
-        const row = document.createElement("div");
-        row.className = "stock-row";
-
-        const nameBox = document.createElement("div");
-
-        const name = document.createElement("div");
-        name.className = "stock-name";
-        name.textContent = item.label;
-
-        const price = document.createElement("div");
-        price.className = "service-price";
-        price.textContent = money(item.price);
-
-        nameBox.appendChild(name);
-        nameBox.appendChild(price);
-
-        const current = document.createElement("div");
-        current.className = "stock-current";
-        current.textContent = stockOf(item.id) === null ? "Sin límite" : String(stockOf(item.id));
-
-        const input = document.createElement("input");
-        input.className = "input";
-        input.type = "number";
-        input.min = "0";
-        input.placeholder = "Cantidad";
-        input.value = stockOf(item.id) === null ? "" : String(stockOf(item.id));
-
-        const actions = document.createElement("div");
-        actions.className = "stock-actions";
-
-        const saveBtn = document.createElement("button");
-        saveBtn.textContent = "Guardar";
-        saveBtn.onclick = function() {
-          updateStock(item.id, "set", Number(input.value || 0));
-        };
-
-        const unlimitedBtn = document.createElement("button");
-        unlimitedBtn.textContent = "Sin límite";
-        unlimitedBtn.onclick = function() {
-          updateStock(item.id, "unlimited", 0);
-        };
-
-        actions.appendChild(saveBtn);
-        actions.appendChild(unlimitedBtn);
-
-        row.appendChild(nameBox);
-        row.appendChild(current);
-        row.appendChild(input);
-        row.appendChild(actions);
-
-        stockListEl.appendChild(row);
-      });
-    }
-
     function render() {
       renderDiscounts();
       renderServices();
       renderSummary();
-      renderStock();
     }
 
     async function reloadData() {
@@ -1291,37 +2161,6 @@ function iniciarWeb() {
       });
 
       render();
-    }
-
-    async function updateStock(itemId, action, quantity) {
-      try {
-        setMessage(stockMessageEl, "", "");
-
-        const response = await fetch("/api/stock/update", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-admin-pin": stockPinEl.value || ""
-          },
-          body: JSON.stringify({
-            itemId: itemId,
-            action: action,
-            quantity: quantity
-          })
-        });
-
-        const result = await response.json();
-
-        if (!response.ok || !result.ok) {
-          throw new Error(result.error || "No se pudo actualizar el stock.");
-        }
-
-        DATA = result.data;
-        setMessage(stockMessageEl, "ok", "Stock actualizado correctamente.");
-        render();
-      } catch (error) {
-        setMessage(stockMessageEl, "error", error.message || "No se pudo actualizar el stock.");
-      }
     }
 
     async function sendSelection() {
@@ -1366,7 +2205,7 @@ function iniciarWeb() {
         render();
       } catch (error) {
         setMessage(mainMessageEl, "error", error.message || "No se pudo enviar.");
-        render();
+        await reloadData().catch(function() {});
       }
     }
 
@@ -1378,7 +2217,6 @@ function iniciarWeb() {
     };
 
     sendBtn.onclick = sendSelection;
-    refreshBtn.onclick = reloadData;
 
     render();
   </script>
