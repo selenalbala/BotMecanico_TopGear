@@ -34,10 +34,6 @@ function normalizarItemId(value) {
     .replace(/^_+|_+$/g, "");
 }
 
-function dinero(value, suffix) {
-  return `${new Intl.NumberFormat("es-ES").format(Math.round(Number(value) || 0))}${suffix || "$"}`;
-}
-
 function leerJsonSeguro(filePath, fallback) {
   try {
     if (!fs.existsSync(filePath)) return fallback;
@@ -59,33 +55,42 @@ function guardarJsonSeguro(filePath, data) {
 }
 
 function itemsCalculadora() {
-  return (config.CALCULATOR_ITEMS || []).map(item => ({
-    id: normalizarItemId(item.id || item.label),
-    label: String(item.label || item.id || "").trim(),
-    price: Number(item.price) || 0
-  })).filter(item => item.id && item.label);
+  return (config.CALCULATOR_ITEMS || [])
+    .map(item => ({
+      id: normalizarItemId(item.id || item.label),
+      label: String(item.label || item.id || "").trim(),
+      price: Number(item.price) || 0
+    }))
+    .filter(item => item.id && item.label);
 }
 
 function crearStockInicial() {
   return {
     version: 1,
     items: {},
-    orders: [],
+    movements: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
 }
 
+function stockFilePath() {
+  return path.join(elegirDataDir(), "topgear-web-stock.json");
+}
+
 function normalizarStock(raw) {
   const data = raw && typeof raw === "object" ? raw : crearStockInicial();
+
   data.version = 1;
   data.items = data.items && typeof data.items === "object" && !Array.isArray(data.items) ? data.items : {};
-  data.orders = Array.isArray(data.orders) ? data.orders : [];
+  data.movements = Array.isArray(data.movements) ? data.movements : [];
 
   for (const item of itemsCalculadora()) {
     const old = data.items[item.id] && typeof data.items[item.id] === "object" ? data.items[item.id] : {};
     let stock = old.stock;
+
     if (stock === undefined) stock = null;
+
     if (stock !== null) {
       stock = Number(stock);
       if (!Number.isFinite(stock) || stock < 0) stock = 0;
@@ -102,10 +107,6 @@ function normalizarStock(raw) {
 
   data.updatedAt = new Date().toISOString();
   return data;
-}
-
-function stockFilePath() {
-  return path.join(elegirDataDir(), "topgear-web-stock.json");
 }
 
 function cargarStock() {
@@ -128,18 +129,21 @@ function validarPin(req) {
 }
 
 function stockPublico(data) {
-  const stock = {};
+  const result = {};
+
   for (const [itemId, info] of Object.entries(data.items || {})) {
-    stock[itemId] = {
+    result[itemId] = {
       stock: info.stock === null ? null : Number(info.stock) || 0,
       updatedAt: info.updatedAt || null
     };
   }
-  return stock;
+
+  return result;
 }
 
-function obtenerDatosPublicos() {
+function datosPublicos() {
   const stock = cargarStock();
+
   return {
     currencySuffix: config.CURRENCY_SUFFIX || "$",
     discounts: config.CALCULATOR_DISCOUNTS?.length ? config.CALCULATOR_DISCOUNTS : [0, 5, 10, 15],
@@ -149,13 +153,13 @@ function obtenerDatosPublicos() {
   };
 }
 
-function validarPedido(body) {
+function validarSeleccion(body) {
   const itemMap = new Map(itemsCalculadora().map(item => [item.id, item]));
   const selected = Array.isArray(body?.items) ? body.items : [];
   const discount = Number(body?.discount || 0);
 
   if (!selected.length) {
-    return { error: "No hay servicios añadidos al presupuesto." };
+    return { error: "No hay servicios añadidos." };
   }
 
   if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
@@ -163,6 +167,7 @@ function validarPedido(body) {
   }
 
   const lines = [];
+
   for (const raw of selected) {
     const itemId = normalizarItemId(raw?.id);
     const item = itemMap.get(itemId);
@@ -185,22 +190,16 @@ function validarPedido(body) {
   const subtotal = lines.reduce((acc, line) => acc + line.lineTotal, 0);
   const total = Math.round(subtotal * (1 - discount / 100));
 
-  return {
-    lines,
-    discount,
-    subtotal,
-    total,
-    customer: String(body?.customer || "").trim().slice(0, 80),
-    plate: String(body?.plate || "").trim().slice(0, 40),
-    notes: String(body?.notes || "").trim().slice(0, 600)
-  };
+  return { lines, discount, subtotal, total };
 }
 
 function comprobarStockDisponible(stockData, lines) {
   for (const line of lines) {
     const info = stockData.items?.[line.id];
     if (!info || info.stock === null) continue;
+
     const current = Number(info.stock) || 0;
+
     if (current < line.quantity) {
       return {
         ok: false,
@@ -208,54 +207,33 @@ function comprobarStockDisponible(stockData, lines) {
       };
     }
   }
+
   return { ok: true };
 }
 
 function descontarStock(stockData, lines) {
   const now = new Date().toISOString();
+
   for (const line of lines) {
     const info = stockData.items?.[line.id];
     if (!info || info.stock === null) continue;
+
     info.stock = Math.max(0, Math.floor((Number(info.stock) || 0) - line.quantity));
     info.updatedAt = now;
   }
+
+  stockData.movements.unshift({
+    id: `send_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    type: "send",
+    createdAt: now,
+    lines
+  });
+
+  stockData.movements = stockData.movements.slice(0, 300);
+  stockData.updatedAt = now;
 }
 
-async function enviarPedidoDiscord(client, order) {
-  const channelId = env("WEB_ORDERS_CHANNEL_ID", "") || config.CHANNELS?.LOGS || config.CHANNELS?.CALCULADORA || "";
-  if (!client || !channelId) return false;
-
-  try {
-    const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (!channel?.isTextBased()) return false;
-
-    const suffix = config.CURRENCY_SUFFIX || "$";
-    const cliente = order.customer ? `Cliente: ${order.customer}\n` : "";
-    const matricula = order.plate ? `Matrícula: ${order.plate}\n` : "";
-    const notas = order.notes ? `Observaciones: ${order.notes}\n` : "";
-    const lineas = order.lines
-      .map(line => `• ${line.label} x${line.quantity} — ${dinero(line.lineTotal, suffix)}`)
-      .join("\n");
-
-    const texto =
-      `Nuevo presupuesto enviado desde la web\n\n` +
-      cliente +
-      matricula +
-      notas +
-      `\nServicios:\n${lineas}\n\n` +
-      `Subtotal: ${dinero(order.subtotal, suffix)}\n` +
-      `Descuento: ${order.discount}%\n` +
-      `Total: ${dinero(order.total, suffix)}`;
-
-    await channel.send(texto.slice(0, 1900));
-    return true;
-  } catch (error) {
-    console.warn("No se pudo enviar el presupuesto a Discord:", error.message);
-    return false;
-  }
-}
-
-function iniciarWeb(client = null) {
+function iniciarWeb() {
   const app = express();
   const PORT = process.env.PORT || 3000;
 
@@ -266,11 +244,38 @@ function iniciarWeb(client = null) {
   });
 
   app.get("/api/calculadora", (req, res) => {
-    res.json(obtenerDatosPublicos());
+    res.json(datosPublicos());
   });
 
   app.get("/api/web-data", (req, res) => {
-    res.json(obtenerDatosPublicos());
+    res.json(datosPublicos());
+  });
+
+  app.post("/api/enviar", (req, res) => {
+    const parsed = validarSeleccion(req.body);
+
+    if (parsed.error) {
+      return res.status(400).json({ ok: false, error: parsed.error });
+    }
+
+    const stockData = cargarStock();
+    const check = comprobarStockDisponible(stockData, parsed.lines);
+
+    if (!check.ok) {
+      return res.status(400).json({ ok: false, error: check.error });
+    }
+
+    descontarStock(stockData, parsed.lines);
+    guardarStock(stockData);
+
+    res.json({
+      ok: true,
+      message: "Enviado correctamente. Stock descontado.",
+      subtotal: parsed.subtotal,
+      discount: parsed.discount,
+      total: parsed.total,
+      data: datosPublicos()
+    });
   });
 
   app.post("/api/stock/update", (req, res) => {
@@ -281,8 +286,8 @@ function iniciarWeb(client = null) {
     const itemId = normalizarItemId(req.body?.itemId);
     const action = String(req.body?.action || "").trim().toLowerCase();
     const quantity = Math.floor(Number(req.body?.quantity || 0));
-
     const validIds = new Set(itemsCalculadora().map(item => item.id));
+
     if (!validIds.has(itemId)) {
       return res.status(400).json({ ok: false, error: "Servicio no válido." });
     }
@@ -291,14 +296,11 @@ function iniciarWeb(client = null) {
     const info = data.items[itemId];
     const now = new Date().toISOString();
 
-    if (action === "increment") {
-      info.stock = (info.stock === null ? 0 : Number(info.stock) || 0) + Math.max(1, quantity || 1);
-    } else if (action === "decrement") {
-      info.stock = Math.max(0, (info.stock === null ? 0 : Number(info.stock) || 0) - Math.max(1, quantity || 1));
-    } else if (action === "set") {
+    if (action === "set") {
       if (!Number.isFinite(quantity) || quantity < 0 || quantity > 999999) {
         return res.status(400).json({ ok: false, error: "Cantidad de stock no válida." });
       }
+
       info.stock = quantity;
     } else if (action === "unlimited") {
       info.stock = null;
@@ -310,53 +312,11 @@ function iniciarWeb(client = null) {
     data.updatedAt = now;
     guardarStock(data);
 
-    res.json({ ok: true, data: obtenerDatosPublicos() });
-  });
-
-  app.post("/api/presupuestos/enviar", async (req, res) => {
-    const parsed = validarPedido(req.body);
-    if (parsed.error) {
-      return res.status(400).json({ ok: false, error: parsed.error });
-    }
-
-    const stockData = cargarStock();
-    const check = comprobarStockDisponible(stockData, parsed.lines);
-    if (!check.ok) {
-      return res.status(400).json({ ok: false, error: check.error });
-    }
-
-    descontarStock(stockData, parsed.lines);
-
-    const order = {
-      id: `web_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      createdAt: new Date().toISOString(),
-      customer: parsed.customer,
-      plate: parsed.plate,
-      notes: parsed.notes,
-      lines: parsed.lines,
-      subtotal: parsed.subtotal,
-      discount: parsed.discount,
-      total: parsed.total
-    };
-
-    stockData.orders.unshift(order);
-    stockData.orders = stockData.orders.slice(0, 300);
-    stockData.updatedAt = new Date().toISOString();
-    guardarStock(stockData);
-
-    const sentToDiscord = await enviarPedidoDiscord(client, order);
-
-    res.json({
-      ok: true,
-      orderId: order.id,
-      sentToDiscord,
-      message: sentToDiscord ? "Presupuesto enviado correctamente." : "Presupuesto guardado correctamente.",
-      data: obtenerDatosPublicos()
-    });
+    res.json({ ok: true, data: datosPublicos() });
   });
 
   app.get("/", (req, res) => {
-    const initialData = JSON.stringify(obtenerDatosPublicos()).replace(/</g, "\\u003c");
+    const initialData = JSON.stringify(datosPublicos()).replace(/</g, "\\u003c");
 
     res.send(`<!doctype html>
 <html lang="es">
@@ -369,22 +329,23 @@ function iniciarWeb(client = null) {
     :root {
       --bg: #050807;
       --panel: rgba(15, 24, 19, .86);
-      --panel2: rgba(255,255,255,.04);
       --border: rgba(255,255,255,.10);
-      --border2: rgba(0,184,116,.38);
+      --border-strong: rgba(0,184,116,.40);
       --text: #f6fff9;
       --muted: #9fb1a8;
-      --muted2: #6f8178;
+      --muted-2: #6f8178;
       --green: #00b875;
-      --green2: #087d53;
+      --green-2: #087d53;
       --red: #c01718;
-      --red2: rgba(192,23,24,.14);
+      --red-soft: rgba(192,23,24,.14);
       --button: #223127;
       --shadow: 0 28px 90px rgba(0,0,0,.45);
       --radius: 24px;
     }
 
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
     body {
       margin: 0;
@@ -410,7 +371,8 @@ function iniciarWeb(client = null) {
       mask-image: linear-gradient(to bottom, rgba(0,0,0,.75), transparent 80%);
     }
 
-    button, input, textarea {
+    button,
+    input {
       font: inherit;
     }
 
@@ -421,8 +383,14 @@ function iniciarWeb(client = null) {
       transition: transform .12s ease, border-color .12s ease, background .12s ease, opacity .12s ease;
     }
 
-    button:active { transform: scale(.98); }
-    button:disabled { opacity: .45; cursor: not-allowed; }
+    button:active {
+      transform: scale(.98);
+    }
+
+    button:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
 
     .page {
       width: min(1260px, 100%);
@@ -543,7 +511,7 @@ function iniciarWeb(client = null) {
     }
 
     .service.selected {
-      border-color: var(--border2);
+      border-color: var(--border-strong);
       background: linear-gradient(180deg, rgba(0,184,116,.12), rgba(255,255,255,.035));
     }
 
@@ -561,7 +529,8 @@ function iniciarWeb(client = null) {
       margin-bottom: 8px;
     }
 
-    .service-price, .service-stock {
+    .service-price,
+    .service-stock {
       color: var(--muted);
       font-size: 14px;
       font-weight: 700;
@@ -593,9 +562,12 @@ function iniciarWeb(client = null) {
       color: white;
     }
 
-    .btn-add { background: linear-gradient(135deg, var(--green), var(--green2)); }
+    .btn-add {
+      background: linear-gradient(135deg, var(--green), var(--green-2));
+    }
+
     .btn-remove {
-      background: var(--red2);
+      background: var(--red-soft);
       color: #ffd4d4;
       border: 1px solid rgba(192,23,24,.35);
     }
@@ -647,7 +619,7 @@ function iniciarWeb(client = null) {
     }
 
     .discounts button.active {
-      background: linear-gradient(135deg, var(--green), var(--green2));
+      background: linear-gradient(135deg, var(--green), var(--green-2));
       border-color: rgba(255,255,255,.14);
     }
 
@@ -732,7 +704,7 @@ function iniciarWeb(client = null) {
       width: 100%;
       min-height: 50px;
       border-radius: 16px;
-      background: linear-gradient(135deg, var(--green), var(--green2));
+      background: linear-gradient(135deg, var(--green), var(--green-2));
       color: white;
     }
 
@@ -771,12 +743,6 @@ function iniciarWeb(client = null) {
       color: var(--text);
       padding: 0 14px;
       outline: none;
-    }
-
-    textarea.input {
-      min-height: 94px;
-      resize: vertical;
-      padding: 12px 14px;
     }
 
     .input:focus {
@@ -833,11 +799,11 @@ function iniciarWeb(client = null) {
     }
 
     .stock-actions button:first-child {
-      background: linear-gradient(135deg, var(--green), var(--green2));
+      background: linear-gradient(135deg, var(--green), var(--green-2));
     }
 
     .stock-actions button:last-child {
-      background: var(--red2);
+      background: var(--red-soft);
       color: #ffd4d4;
       border-color: rgba(192,23,24,.34);
     }
@@ -865,83 +831,66 @@ function iniciarWeb(client = null) {
       border: 1px solid rgba(192,23,24,.32);
     }
 
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      display: none;
-      place-items: center;
-      padding: 20px;
-      background: rgba(0,0,0,.70);
-      z-index: 50;
-    }
-
-    .modal-backdrop.open {
-      display: grid;
-    }
-
-    .modal {
-      width: min(560px, 100%);
-      border: 1px solid var(--border);
-      border-radius: 24px;
-      background: #0b120e;
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }
-
-    .modal-header {
-      padding: 20px 22px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: center;
-    }
-
-    .modal-header h3 {
-      margin: 0;
-      font-size: 20px;
-    }
-
-    .modal-body {
-      padding: 22px;
-      display: grid;
-      gap: 12px;
-    }
-
-    .modal-actions {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      padding: 0 22px 22px;
-    }
-
     .footer {
       margin-top: 24px;
-      color: var(--muted2);
+      color: var(--muted-2);
       text-align: center;
       font-size: 13px;
     }
 
     @media (max-width: 1100px) {
-      .layout { grid-template-columns: 1fr; }
-      .summary { position: static; }
-      .hero { grid-template-columns: 1fr; }
-      .hero-card { width: fit-content; }
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .summary {
+        position: static;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-card {
+        width: fit-content;
+      }
     }
 
     @media (max-width: 820px) {
-      body { padding: 18px; }
-      .services { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .stock-row { grid-template-columns: 1fr; }
-      .stock-tools { grid-template-columns: 1fr; }
+      body {
+        padding: 18px;
+      }
+
+      .services {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .stock-row {
+        grid-template-columns: 1fr;
+      }
+
+      .stock-tools {
+        grid-template-columns: 1fr;
+      }
     }
 
     @media (max-width: 560px) {
-      .services { grid-template-columns: 1fr; }
-      .card-header { align-items: flex-start; flex-direction: column; }
-      .hero-card { width: 100%; }
-      .discounts { grid-template-columns: repeat(2, 1fr); }
-      .modal-actions { grid-template-columns: 1fr; }
+      .services {
+        grid-template-columns: 1fr;
+      }
+
+      .card-header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .hero-card {
+        width: 100%;
+      }
+
+      .discounts {
+        grid-template-columns: repeat(2, 1fr);
+      }
     }
   </style>
 </head>
@@ -952,7 +901,7 @@ function iniciarWeb(client = null) {
       <div>
         <p class="eyebrow">Top Gear</p>
         <h1>Calculadora de servicios</h1>
-        <p class="subtitle">Selecciona servicios, aplica descuentos, envía el presupuesto y descuenta stock automáticamente.</p>
+        <p class="subtitle">Selecciona servicios, aplica descuentos y pulsa Enviar para descontar el stock.</p>
       </div>
 
       <div class="hero-card">
@@ -972,7 +921,7 @@ function iniciarWeb(client = null) {
 
       <aside class="card summary">
         <div class="card-header">
-          <h2>Resumen del presupuesto</h2>
+          <h2>Resumen</h2>
         </div>
 
         <div class="summary-body">
@@ -998,8 +947,8 @@ function iniciarWeb(client = null) {
           </div>
 
           <div class="summary-actions">
-            <button class="send" id="sendBtn">Enviar presupuesto</button>
-            <button class="clear" id="clearBtn">Limpiar presupuesto</button>
+            <button class="send" id="sendBtn">Enviar</button>
+            <button class="clear" id="clearBtn">Limpiar</button>
           </div>
 
           <div id="mainMessage" class="message"></div>
@@ -1011,39 +960,23 @@ function iniciarWeb(client = null) {
       <div class="card-header">
         <div>
           <h2>Control de stock</h2>
-          <div class="counter">Usa stock ilimitado para servicios que no quieras controlar.</div>
+          <div class="counter">Pon una cantidad o marca un servicio como sin límite.</div>
         </div>
         <div class="stock-tools">
           <input id="stockPin" class="input" type="password" placeholder="PIN de administración" />
           <button class="small-button" id="refreshBtn">Actualizar</button>
         </div>
       </div>
+
       <div id="stockList" class="stock-list"></div>
+
       <div style="padding: 0 18px 18px;">
         <div id="stockMessage" class="message"></div>
       </div>
     </section>
 
-    <div class="footer">Top Gear · Calculadora y control de stock</div>
+    <div class="footer">Top Gear · Calculadora y stock</div>
   </main>
-
-  <div class="modal-backdrop" id="sendModal">
-    <div class="modal">
-      <div class="modal-header">
-        <h3>Enviar presupuesto</h3>
-        <button class="small-button" id="closeModalBtn">Cerrar</button>
-      </div>
-      <div class="modal-body">
-        <input id="customerInput" class="input" placeholder="Cliente o nombre IC" />
-        <input id="plateInput" class="input" placeholder="Matrícula o vehículo" />
-        <textarea id="notesInput" class="input" placeholder="Observaciones"></textarea>
-      </div>
-      <div class="modal-actions">
-        <button class="clear" id="cancelSendBtn">Cancelar</button>
-        <button class="send" id="confirmSendBtn">Enviar y descontar stock</button>
-      </div>
-    </div>
-  </div>
 
   <script>
     let DATA = ${initialData};
@@ -1069,14 +1002,6 @@ function iniciarWeb(client = null) {
     const refreshBtn = document.getElementById("refreshBtn");
     const mainMessageEl = document.getElementById("mainMessage");
     const stockMessageEl = document.getElementById("stockMessage");
-
-    const sendModal = document.getElementById("sendModal");
-    const closeModalBtn = document.getElementById("closeModalBtn");
-    const cancelSendBtn = document.getElementById("cancelSendBtn");
-    const confirmSendBtn = document.getElementById("confirmSendBtn");
-    const customerInput = document.getElementById("customerInput");
-    const plateInput = document.getElementById("plateInput");
-    const notesInput = document.getElementById("notesInput");
 
     function money(value) {
       return new Intl.NumberFormat("es-ES").format(Math.round(Number(value) || 0)) + (DATA.currencySuffix || "$");
@@ -1106,35 +1031,47 @@ function iniciarWeb(client = null) {
             quantity: quantityOf(item.id)
           };
         })
-        .filter(function(item) { return item.quantity > 0; });
+        .filter(function(item) {
+          return item.quantity > 0;
+        });
     }
 
     function totals() {
       const selected = selectedItems();
+
       const subtotal = selected.reduce(function(acc, item) {
         return acc + item.price * item.quantity;
       }, 0);
+
       const total = Math.round(subtotal * (1 - state.discount / 100));
+
       const quantity = selected.reduce(function(acc, item) {
         return acc + item.quantity;
       }, 0);
-      return { selected: selected, subtotal: subtotal, total: total, quantity: quantity };
+
+      return {
+        selected: selected,
+        subtotal: subtotal,
+        total: total,
+        quantity: quantity
+      };
     }
 
     function setMessage(el, type, text) {
       el.className = "message" + (type ? " " + type : "");
       el.textContent = text || "";
-      if (!text) el.style.display = "none";
-      else el.style.display = "block";
+      el.style.display = text ? "block" : "none";
     }
 
     function addItem(itemId) {
       const stock = stockOf(itemId);
       const current = quantityOf(itemId);
+
       if (stock !== null && current >= stock) {
         setMessage(mainMessageEl, "error", "No hay más stock disponible para este servicio.");
         return;
       }
+
       state.quantities[itemId] = current + 1;
       setMessage(mainMessageEl, "", "");
       render();
@@ -1142,13 +1079,16 @@ function iniciarWeb(client = null) {
 
     function removeItem(itemId) {
       const next = quantityOf(itemId) - 1;
+
       if (next > 0) state.quantities[itemId] = next;
       else delete state.quantities[itemId];
+
       render();
     }
 
     function renderDiscounts() {
       discountsEl.innerHTML = "";
+
       const discounts = [0].concat(DATA.discounts || [5, 10, 15])
         .map(Number)
         .filter(function(value, index, array) {
@@ -1174,6 +1114,7 @@ function iniciarWeb(client = null) {
       DATA.items.forEach(function(item) {
         const quantity = quantityOf(item.id);
         const stock = stockOf(item.id);
+
         const card = document.createElement("div");
         card.className = "service" + (quantity > 0 ? " selected" : "");
 
@@ -1212,13 +1153,17 @@ function iniciarWeb(client = null) {
         addBtn.className = "btn btn-add";
         addBtn.textContent = "Añadir";
         addBtn.disabled = stock !== null && quantity >= stock;
-        addBtn.onclick = function() { addItem(item.id); };
+        addBtn.onclick = function() {
+          addItem(item.id);
+        };
 
         const removeBtn = document.createElement("button");
         removeBtn.className = "btn btn-remove";
         removeBtn.textContent = "Eliminar";
         removeBtn.disabled = quantity <= 0;
-        removeBtn.onclick = function() { removeItem(item.id); };
+        removeBtn.onclick = function() {
+          removeItem(item.id);
+        };
 
         actions.appendChild(addBtn);
         actions.appendChild(removeBtn);
@@ -1243,7 +1188,6 @@ function iniciarWeb(client = null) {
 
       t.selected.forEach(function(item) {
         const li = document.createElement("li");
-
         const left = document.createElement("div");
 
         const name = document.createElement("div");
@@ -1276,12 +1220,15 @@ function iniciarWeb(client = null) {
         row.className = "stock-row";
 
         const nameBox = document.createElement("div");
+
         const name = document.createElement("div");
         name.className = "stock-name";
         name.textContent = item.label;
+
         const price = document.createElement("div");
         price.className = "service-price";
         price.textContent = money(item.price);
+
         nameBox.appendChild(name);
         nameBox.appendChild(price);
 
@@ -1336,6 +1283,7 @@ function iniciarWeb(client = null) {
 
       Object.keys(state.quantities).forEach(function(itemId) {
         const stock = stockOf(itemId);
+
         if (stock !== null && state.quantities[itemId] > stock) {
           if (stock > 0) state.quantities[itemId] = stock;
           else delete state.quantities[itemId];
@@ -1348,6 +1296,7 @@ function iniciarWeb(client = null) {
     async function updateStock(itemId, action, quantity) {
       try {
         setMessage(stockMessageEl, "", "");
+
         const response = await fetch("/api/stock/update", {
           method: "POST",
           headers: {
@@ -1362,6 +1311,7 @@ function iniciarWeb(client = null) {
         });
 
         const result = await response.json();
+
         if (!response.ok || !result.ok) {
           throw new Error(result.error || "No se pudo actualizar el stock.");
         }
@@ -1374,60 +1324,50 @@ function iniciarWeb(client = null) {
       }
     }
 
-    async function sendBudget() {
+    async function sendSelection() {
       try {
         const t = totals();
+
         if (!t.selected.length) {
           setMessage(mainMessageEl, "error", "Añade algún servicio antes de enviar.");
           return;
         }
 
-        confirmSendBtn.disabled = true;
+        sendBtn.disabled = true;
         setMessage(mainMessageEl, "", "");
 
-        const response = await fetch("/api/presupuestos/enviar", {
+        const response = await fetch("/api/enviar", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json"
+          },
           body: JSON.stringify({
-            customer: customerInput.value || "",
-            plate: plateInput.value || "",
-            notes: notesInput.value || "",
             discount: state.discount,
             items: t.selected.map(function(item) {
-              return { id: item.id, quantity: item.quantity };
+              return {
+                id: item.id,
+                quantity: item.quantity
+              };
             })
           })
         });
 
         const result = await response.json();
+
         if (!response.ok || !result.ok) {
-          throw new Error(result.error || "No se pudo enviar el presupuesto.");
+          throw new Error(result.error || "No se pudo enviar.");
         }
 
         DATA = result.data;
         state.quantities = {};
         state.discount = 0;
-        customerInput.value = "";
-        plateInput.value = "";
-        notesInput.value = "";
-        closeModal();
 
-        setMessage(mainMessageEl, "ok", result.message || "Presupuesto enviado correctamente.");
+        setMessage(mainMessageEl, "ok", result.message || "Enviado correctamente. Stock descontado.");
         render();
       } catch (error) {
-        setMessage(mainMessageEl, "error", error.message || "No se pudo enviar el presupuesto.");
-      } finally {
-        confirmSendBtn.disabled = false;
+        setMessage(mainMessageEl, "error", error.message || "No se pudo enviar.");
+        render();
       }
-    }
-
-    function openModal() {
-      sendModal.classList.add("open");
-      setTimeout(function() { customerInput.focus(); }, 50);
-    }
-
-    function closeModal() {
-      sendModal.classList.remove("open");
     }
 
     clearBtn.onclick = function() {
@@ -1437,15 +1377,8 @@ function iniciarWeb(client = null) {
       render();
     };
 
-    sendBtn.onclick = openModal;
-    closeModalBtn.onclick = closeModal;
-    cancelSendBtn.onclick = closeModal;
-    confirmSendBtn.onclick = sendBudget;
+    sendBtn.onclick = sendSelection;
     refreshBtn.onclick = reloadData;
-
-    sendModal.onclick = function(event) {
-      if (event.target === sendModal) closeModal();
-    };
 
     render();
   </script>
