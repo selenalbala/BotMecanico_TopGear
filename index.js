@@ -2348,6 +2348,6 @@ if (!config.TOKEN) {
   process.exit(1);
 }
 
-iniciarWeb();
+iniciarWeb(client);
 
 client.login(config.TOKEN);
