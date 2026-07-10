@@ -64,6 +64,17 @@ function itemsCalculadora() {
     .filter(item => item.id && item.label);
 }
 
+function esItemIgnoradoStock(itemOrId, label = "") {
+  const id = typeof itemOrId === "object" ? itemOrId.id : itemOrId;
+  const name = typeof itemOrId === "object" ? itemOrId.label : label;
+
+  return normalizarItemId(id) === "full" || normalizarItemId(name) === "full";
+}
+
+function itemsControlStock() {
+  return itemsCalculadora().filter(item => !esItemIgnoradoStock(item));
+}
+
 function crearStockInicial() {
   return {
     version: 2,
@@ -85,7 +96,7 @@ function normalizarStock(raw) {
   data.items = data.items && typeof data.items === "object" && !Array.isArray(data.items) ? data.items : {};
   data.movements = Array.isArray(data.movements) ? data.movements : [];
 
-  for (const item of itemsCalculadora()) {
+  for (const item of itemsControlStock()) {
     const old = data.items[item.id] && typeof data.items[item.id] === "object" ? data.items[item.id] : {};
     let stock = old.stock;
 
@@ -103,6 +114,12 @@ function normalizarStock(raw) {
       stock,
       updatedAt: old.updatedAt || null
     };
+  }
+
+  for (const item of itemsCalculadora()) {
+    if (esItemIgnoradoStock(item)) {
+      delete data.items[item.id];
+    }
   }
 
   data.updatedAt = new Date().toISOString();
@@ -139,6 +156,8 @@ function datosStockPublico(data) {
   const result = {};
 
   for (const [itemId, info] of Object.entries(data.items || {})) {
+    if (esItemIgnoradoStock(itemId, info?.label)) continue;
+
     result[itemId] = {
       stock: info.stock === null ? null : Number(info.stock) || 0,
       updatedAt: info.updatedAt || null
@@ -202,6 +221,8 @@ function validarSeleccion(body) {
 
 function comprobarStockDisponible(stockData, lines) {
   for (const line of lines) {
+    if (esItemIgnoradoStock(line.id, line.label)) continue;
+
     const info = stockData.items?.[line.id];
     if (!info || info.stock === null) continue;
 
@@ -220,8 +241,9 @@ function comprobarStockDisponible(stockData, lines) {
 
 function descontarStock(stockData, parsed) {
   const now = new Date().toISOString();
+  const stockLines = parsed.lines.filter(line => !esItemIgnoradoStock(line.id, line.label));
 
-  for (const line of parsed.lines) {
+  for (const line of stockLines) {
     const info = stockData.items?.[line.id];
     if (!info || info.stock === null) continue;
 
@@ -229,15 +251,17 @@ function descontarStock(stockData, parsed) {
     info.updatedAt = now;
   }
 
-  stockData.movements.unshift({
-    id: `send_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    type: "send",
-    createdAt: now,
-    discount: parsed.discount,
-    subtotal: parsed.subtotal,
-    total: parsed.total,
-    lines: parsed.lines
-  });
+  if (stockLines.length) {
+    stockData.movements.unshift({
+      id: `send_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: "send",
+      createdAt: now,
+      discount: parsed.discount,
+      subtotal: parsed.subtotal,
+      total: parsed.total,
+      lines: stockLines
+    });
+  }
 
   stockData.movements = stockData.movements.slice(0, 500);
   stockData.updatedAt = now;
@@ -283,7 +307,7 @@ function calcularEntradas(data, itemId, dias) {
 
 function resumenAdminStock() {
   const data = cargarStock();
-  const items = itemsCalculadora();
+  const items = itemsControlStock();
 
   const rows = items.map(item => {
     const info = data.items[item.id] || { stock: null };
@@ -322,7 +346,7 @@ function resumenAdminStock() {
 
 function validarItemId(itemId) {
   const id = normalizarItemId(itemId);
-  const validIds = new Set(itemsCalculadora().map(item => item.id));
+  const validIds = new Set(itemsControlStock().map(item => item.id));
   return validIds.has(id) ? id : "";
 }
 
@@ -479,7 +503,7 @@ function iniciarWeb() {
   app.get("/stock", (req, res) => {
     const initial = JSON.stringify({
       requiresPin: requierePin(),
-      items: itemsCalculadora()
+      items: itemsControlStock()
     }).replace(/</g, "\\u003c");
 
     res.send(`<!doctype html>
