@@ -32,36 +32,29 @@ function iniciarWeb() {
   <style>
     :root {
       --bg: #050807;
-      --panel: rgba(15, 24, 19, .82);
-      --panel-2: rgba(20, 32, 25, .72);
+      --panel: rgba(15, 24, 19, .84);
+      --panel-soft: rgba(255, 255, 255, .045);
       --border: rgba(255, 255, 255, .10);
-      --border-strong: rgba(0, 184, 116, .42);
+      --border-strong: rgba(0, 184, 116, .46);
       --text: #f5fff9;
       --muted: #9fb1a8;
       --muted-2: #718178;
       --green: #00b875;
-      --green-2: #068b5d;
+      --green-dark: #068b5d;
       --red: #c01718;
-      --red-2: #7e1517;
-      --dark-button: #213026;
-      --shadow: 0 24px 80px rgba(0, 0, 0, .42);
+      --button: #213026;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .44);
       --radius: 24px;
     }
 
-    * {
-      box-sizing: border-box;
-    }
-
-    html {
-      scroll-behavior: smooth;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
       min-height: 100vh;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
       background:
-        radial-gradient(circle at 12% 0%, rgba(0, 184, 116, .28), transparent 30%),
+        radial-gradient(circle at 12% 0%, rgba(0, 184, 116, .26), transparent 30%),
         radial-gradient(circle at 95% 12%, rgba(0, 184, 116, .12), transparent 34%),
         linear-gradient(135deg, #07110c 0%, #040706 54%, #07120d 100%);
       color: var(--text);
@@ -88,14 +81,8 @@ function iniciarWeb() {
       transition: transform .12s ease, border-color .12s ease, background .12s ease, opacity .12s ease;
     }
 
-    button:active {
-      transform: scale(.98);
-    }
-
-    button:disabled {
-      opacity: .45;
-      cursor: not-allowed;
-    }
+    button:active { transform: scale(.98); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
 
     .page {
       width: min(1240px, 100%);
@@ -217,8 +204,7 @@ function iniciarWeb() {
 
     .service.selected {
       border-color: var(--border-strong);
-      background:
-        linear-gradient(180deg, rgba(0, 184, 116, .12), rgba(255,255,255,.035));
+      background: linear-gradient(180deg, rgba(0, 184, 116, .12), rgba(255,255,255,.035));
     }
 
     .service-top {
@@ -266,9 +252,7 @@ function iniciarWeb() {
       color: white;
     }
 
-    .btn-add {
-      background: linear-gradient(135deg, var(--green), var(--green-2));
-    }
+    .btn-add { background: linear-gradient(135deg, var(--green), var(--green-dark)); }
 
     .btn-remove {
       background: rgba(192, 23, 24, .14);
@@ -276,14 +260,8 @@ function iniciarWeb() {
       border: 1px solid rgba(192, 23, 24, .35);
     }
 
-    .summary {
-      position: sticky;
-      top: 24px;
-    }
-
-    .summary-body {
-      padding: 22px;
-    }
+    .summary { position: sticky; top: 24px; }
+    .summary-body { padding: 22px; }
 
     .metric {
       display: flex;
@@ -296,10 +274,7 @@ function iniciarWeb() {
       font-size: 15px;
     }
 
-    .metric strong {
-      color: var(--text);
-      font-size: 16px;
-    }
+    .metric strong { color: var(--text); font-size: 16px; }
 
     .discount-title {
       margin: 20px 0 10px;
@@ -317,13 +292,13 @@ function iniciarWeb() {
     .discounts button {
       min-height: 44px;
       border-radius: 14px;
-      background: var(--dark-button);
+      background: var(--button);
       color: var(--text);
       border: 1px solid transparent;
     }
 
     .discounts button.active {
-      background: linear-gradient(135deg, var(--green), var(--green-2));
+      background: linear-gradient(135deg, var(--green), var(--green-dark));
       border-color: rgba(255,255,255,.14);
     }
 
@@ -349,21 +324,9 @@ function iniciarWeb() {
       border: 1px solid var(--border);
     }
 
-    .selected-list .name {
-      color: var(--text);
-      font-weight: 800;
-      font-size: 14px;
-    }
-
-    .selected-list .qty {
-      color: var(--muted);
-      font-size: 13px;
-      margin-top: 3px;
-    }
-
-    .selected-list strong {
-      font-size: 14px;
-    }
+    .selected-list .name { color: var(--text); font-weight: 800; font-size: 14px; }
+    .selected-list .qty { color: var(--muted); font-size: 13px; margin-top: 3px; }
+    .selected-list strong { font-size: 14px; }
 
     .empty {
       margin-top: 20px;
@@ -426,50 +389,22 @@ function iniciarWeb() {
     }
 
     @media (max-width: 1060px) {
-      .layout {
-        grid-template-columns: 1fr;
-      }
-
-      .summary {
-        position: static;
-      }
-
-      .hero {
-        grid-template-columns: 1fr;
-      }
-
-      .hero-card {
-        width: fit-content;
-      }
+      .layout { grid-template-columns: 1fr; }
+      .summary { position: static; }
+      .hero { grid-template-columns: 1fr; }
+      .hero-card { width: fit-content; }
     }
 
     @media (max-width: 760px) {
-      body {
-        padding: 18px;
-      }
-
-      .services {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
+      body { padding: 18px; }
+      .services { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
 
     @media (max-width: 540px) {
-      .services {
-        grid-template-columns: 1fr;
-      }
-
-      .card-header {
-        align-items: flex-start;
-        flex-direction: column;
-      }
-
-      .hero-card {
-        width: 100%;
-      }
-
-      .discounts {
-        grid-template-columns: repeat(2, 1fr);
-      }
+      .services { grid-template-columns: 1fr; }
+      .card-header { align-items: flex-start; flex-direction: column; }
+      .hero-card { width: 100%; }
+      .discounts { grid-template-columns: repeat(2, 1fr); }
     }
   </style>
 </head>
@@ -495,7 +430,7 @@ function iniciarWeb() {
       <div class="card">
         <div class="card-header">
           <h2>Servicios disponibles</h2>
-          <div class="counter" id="itemsCounter">0 seleccionados</div>
+          <div class="counter" id="itemsCounter">0 servicios añadidos</div>
         </div>
 
         <div id="services" class="services"></div>
@@ -526,9 +461,7 @@ function iniciarWeb() {
           </div>
 
           <div class="total">
-            <div>
-              <span>Total</span>
-            </div>
+            <div><span>Total</span></div>
             <strong id="total">0${currencySuffix}</strong>
           </div>
 
@@ -543,9 +476,11 @@ function iniciarWeb() {
   <script>
     const ITEMS = ${itemsJson};
     const RAW_DISCOUNTS = ${discountsJson};
-    const DISCOUNTS = [0, ...RAW_DISCOUNTS]
-      .filter((value, index, array) => Number.isFinite(Number(value)) && array.indexOf(value) === index)
+    const DISCOUNTS = [0].concat(RAW_DISCOUNTS)
       .map(Number)
+      .filter(function(value, index, array) {
+        return Number.isFinite(value) && array.indexOf(value) === index;
+      })
       .slice(0, 6);
 
     const CURRENCY_SUFFIX = ${JSON.stringify(currencySuffix)};
@@ -566,6 +501,15 @@ function iniciarWeb() {
     const discountsEl = document.getElementById("discounts");
     const itemsCounterEl = document.getElementById("itemsCounter");
 
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
     function money(value) {
       return new Intl.NumberFormat("es-ES").format(value) + CURRENCY_SUFFIX;
     }
@@ -576,19 +520,22 @@ function iniciarWeb() {
 
     function selectedItems() {
       return ITEMS
-        .map(item => ({
-          ...item,
-          quantity: quantityOf(item.id)
-        }))
-        .filter(item => item.quantity > 0);
+        .map(function(item) {
+          return Object.assign({}, item, { quantity: quantityOf(item.id) });
+        })
+        .filter(function(item) { return item.quantity > 0; });
     }
 
     function totals() {
       const selected = selectedItems();
-      const subtotal = selected.reduce((acc, item) => acc + item.price * item.quantity, 0);
+      const subtotal = selected.reduce(function(acc, item) {
+        return acc + item.price * item.quantity;
+      }, 0);
       const total = Math.round(subtotal * (1 - state.discount / 100));
-      const quantity = selected.reduce((acc, item) => acc + item.quantity, 0);
-      return { selected, subtotal, total, quantity };
+      const quantity = selected.reduce(function(acc, item) {
+        return acc + item.quantity;
+      }, 0);
+      return { selected: selected, subtotal: subtotal, total: total, quantity: quantity };
     }
 
     function addItem(itemId) {
@@ -606,12 +553,12 @@ function iniciarWeb() {
     function renderDiscounts() {
       discountsEl.innerHTML = "";
 
-      DISCOUNTS.forEach(discount => {
+      DISCOUNTS.forEach(function(discount) {
         const btn = document.createElement("button");
         btn.textContent = discount + "%";
         btn.className = state.discount === discount ? "active" : "";
 
-        btn.onclick = () => {
+        btn.onclick = function() {
           state.discount = discount;
           render();
         };
@@ -623,7 +570,7 @@ function iniciarWeb() {
     function renderServices() {
       servicesEl.innerHTML = "";
 
-      ITEMS.forEach(item => {
+      ITEMS.forEach(function(item) {
         const quantity = quantityOf(item.id);
 
         const card = document.createElement("div");
@@ -633,14 +580,12 @@ function iniciarWeb() {
         top.className = "service-top";
 
         const info = document.createElement("div");
-        info.innerHTML = `
-          <div class="service-name">${item.label}</div>
-          <div class="service-price">${money(item.price)}</div>
-        `;
+        info.innerHTML = '<div class="service-name">' + escapeHtml(item.label) + '</div>' +
+          '<div class="service-price">' + money(item.price) + '</div>';
 
         const qty = document.createElement("div");
         qty.className = "quantity";
-        qty.textContent = quantity;
+        qty.textContent = String(quantity);
 
         top.appendChild(info);
         top.appendChild(qty);
@@ -651,13 +596,13 @@ function iniciarWeb() {
         const addBtn = document.createElement("button");
         addBtn.className = "btn btn-add";
         addBtn.textContent = "Añadir";
-        addBtn.onclick = () => addItem(item.id);
+        addBtn.onclick = function() { addItem(item.id); };
 
         const removeBtn = document.createElement("button");
         removeBtn.className = "btn btn-remove";
         removeBtn.textContent = "Eliminar";
         removeBtn.disabled = quantity <= 0;
-        removeBtn.onclick = () => removeItem(item.id);
+        removeBtn.onclick = function() { removeItem(item.id); };
 
         actions.appendChild(addBtn);
         actions.appendChild(removeBtn);
@@ -669,26 +614,25 @@ function iniciarWeb() {
     }
 
     function renderSummary() {
-      const { selected, subtotal, total, quantity } = totals();
+      const current = totals();
+      const selected = current.selected;
 
-      subtotalEl.textContent = money(subtotal);
-      totalEl.textContent = money(total);
-      heroTotalEl.textContent = money(total);
+      subtotalEl.textContent = money(current.subtotal);
+      totalEl.textContent = money(current.total);
+      heroTotalEl.textContent = money(current.total);
       discountTextEl.textContent = state.discount + "%";
-      itemsCounterEl.textContent = quantity === 1 ? "1 servicio añadido" : quantity + " servicios añadidos";
+      itemsCounterEl.textContent = current.quantity === 1 ? "1 servicio añadido" : current.quantity + " servicios añadidos";
 
       selectedListEl.innerHTML = "";
       emptyTextEl.style.display = selected.length ? "none" : "block";
 
-      selected.forEach(item => {
+      selected.forEach(function(item) {
         const li = document.createElement("li");
-        li.innerHTML = `
-          <div>
-            <div class="name">${item.label}</div>
-            <div class="qty">Cantidad: ${item.quantity}</div>
-          </div>
-          <strong>${money(item.price * item.quantity)}</strong>
-        `;
+        li.innerHTML = '<div>' +
+          '<div class="name">' + escapeHtml(item.label) + '</div>' +
+          '<div class="qty">Cantidad: ' + item.quantity + '</div>' +
+          '</div>' +
+          '<strong>' + money(item.price * item.quantity) + '</strong>';
         selectedListEl.appendChild(li);
       });
     }
@@ -699,7 +643,7 @@ function iniciarWeb() {
       renderSummary();
     }
 
-    clearBtn.onclick = () => {
+    clearBtn.onclick = function() {
       state.discount = 0;
       state.quantities = {};
       render();
