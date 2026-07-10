@@ -97,6 +97,7 @@ function getCalculatorItems() {
 module.exports = {
   TOKEN: env("DISCORD_TOKEN"),
   GUILD_ID: envId(["GUILD_ID", "SERVER_ID"]),
+  WEB_URL: env("WEB_URL"),
   TIMEZONE: env("TZ", env("TIMEZONE", "Europe/Madrid")),
   DATA_DIR: env("DATA_DIR", env("STOCK_DATA_DIR", env("RAILWAY_VOLUME_MOUNT_PATH", ""))),
   DATA_FILE: env("DATA_FILE"),
@@ -105,7 +106,6 @@ module.exports = {
   CURRENCY_SUFFIX: env("CURRENCY_SUFFIX", "$"),
 
   CHANNELS: {
-    // FICHAJES acepta también CHANNEL_ID para compatibilidad con versiones anteriores.
     FICHAJES: envId(["FICHAJES_CHANNEL_ID", "FICHAJE_CHANNEL_ID", "CLOCK_CHANNEL_ID", "CHANNEL_ID"]),
     PAGOS: envId(["PAGOS_CHANNEL_ID", "PAGO_CHANNEL_ID", "PAYMENTS_CHANNEL_ID", "PAYMENT_CHANNEL_ID"]),
     CALCULADORA: envId(["CALCULADORA_CHANNEL_ID", "CALCULATOR_CHANNEL_ID", "CALCULADORA_ID"]),

@@ -1118,12 +1118,28 @@ function crearEmbedCalculadora() {
 }
 
 function crearBotonesCalculadora() {
+  const botones = [];
+
+  if (config.WEB_URL) {
+    botones.push(
+      new ButtonBuilder()
+        .setLabel("🌐 Abrir calculadora web")
+        .setStyle(ButtonStyle.Link)
+        .setURL(config.WEB_URL)
+    );
+  }
+
+  botones.push(
+    // Discord a veces rechaza algunos unicode en setEmoji().
+    // Por eso el emote va dentro del texto del botón.
+    new ButtonBuilder()
+      .setCustomId(`${PREFIX}:calc:abrir`)
+      .setLabel("🧮 Calculadora Discord")
+      .setStyle(ButtonStyle.Success)
+  );
+
   return [
-    new ActionRowBuilder().addComponents(
-      // Discord a veces rechaza algunos unicode en setEmoji().
-      // Por eso el emote va dentro del texto del botón.
-      new ButtonBuilder().setCustomId(`${PREFIX}:calc:abrir`).setLabel("🧮 Calculadora").setStyle(ButtonStyle.Success)
-    )
+    new ActionRowBuilder().addComponents(botones)
   ];
 }
 

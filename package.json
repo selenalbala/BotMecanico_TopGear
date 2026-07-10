@@ -1,7 +1,7 @@
 {
   "name": "topgear-bot-fichajes-railway",
-  "version": "2.0.12",
-  "description": "Bot de Top Gear para fichajes, pagos y calculadora en Railway.",
+  "version": "2.0.13",
+  "description": "Bot de Top Gear para fichajes, pagos, postulaciones y calculadora web en Railway.",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
