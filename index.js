@@ -18,7 +18,9 @@ const client = new Client({intents: [GatewayIntentBits.Guilds, GatewayIntentBits
 
 function respuestaPrivada(payload) {return { ...payload, flags: MessageFlags.Ephemeral };}
 
-function generarId(prefix = "id") {return ${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)};}
+function generarId(prefix = "id") {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
 
 function crearDatosIniciales() {return {version: 2,panelMessages: {},openShifts: {},entries: [],employees: {},applications: {},formerMembers: {},createdAt: new Date().toISOString(),updatedAt: new Date().toISOString()};}
 
@@ -40,7 +42,7 @@ function firstDefined(obj, keys) {if (!obj || typeof obj !== "object") return un
 
 function legacyUserId(record, fallbackUserId = null) {const raw = firstDefined(record, ["userId", "usuarioId", "discordId", "idDiscord", "memberId", "empleadoId", "id", "usuario"]);const text = raw !== undefined ? String(raw) : String(fallbackUserId || "");const match = text.match(/\d{17,20}/);return match ? match[0] : null;}
 
-function legacyDisplayName(record, fallbackName = null, userId = null) {const raw = firstDefined(record, ["displayName", "nombre", "name", "username", "usuario", "empleado", "nick", "nickname"]);const text = raw !== undefined ? String(raw).trim() : String(fallbackName || "").trim();if (text && !/^\d{17,20}$/.test(text)) return text.slice(0, 100);return userId ? Usuario ${userId} : "Usuario desconocido";}
+function legacyDisplayName(record, fallbackName = null, userId = null) {const raw = firstDefined(record, ["displayName", "nombre", "name", "username", "usuario", "empleado", "nick", "nickname"]);const text = raw !== undefined ? String(raw).trim() : String(fallbackName || "").trim();if (text && !/^\d{17,20}$/.test(text)) return text.slice(0, 100);return userId ? `Usuario ${userId}` : "Usuario desconocido";}
 
 function legacyStart(record) {const value = firstDefined(record, ["start", "entrada", "inicio", "clockIn", "clock_in", "startedAt", "fechaEntrada", "horaEntrada", "entradaAt", "desde", "in"]);if (value && typeof value === "object") {return parseLegacyDate(firstDefined(value, ["date", "fecha", "time", "hora", "at", "value", "iso"])) || parseLegacyDate(value.start);}return parseLegacyDate(value);}
 
@@ -97,7 +99,9 @@ for (const key of ["usuarios", "users", "empleados", "employees", "trabajadores"
 
 return records;}
 
-function firmaEntry(entry) {return ${entry.type || "shift"}|${entry.userId || ""}|${entry.start || entry.date || ""}|${entry.end || "open"}|${entry.minutes || ""};}
+function firmaEntry(entry) {
+  return `${entry.type || "shift"}|${entry.userId || ""}|${entry.start || entry.date || ""}|${entry.end || "open"}|${entry.minutes || ""}`;
+}
 
 function importarFichajesLegacySiExiste(data) {try {if (!fs.existsSync(LEGACY_FICHAJES_FILE)) return data;
 
