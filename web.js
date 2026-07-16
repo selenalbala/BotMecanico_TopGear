@@ -251,20 +251,22 @@ function descontarStock(stockData, parsed) {
     info.updatedAt = now;
   }
 
-  if (stockLines.length) {
-    stockData.movements.unshift({
-      id: `send_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      type: "send",
-      createdAt: now,
-      discount: parsed.discount,
-      subtotal: parsed.subtotal,
-      total: parsed.total,
-      lines: stockLines
-    });
-  }
+  const movement = {
+    id: `send_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    type: "send",
+    createdAt: now,
+    discount: parsed.discount,
+    subtotal: parsed.subtotal,
+    total: parsed.total,
+    lines: parsed.lines,
+    discordLogRequired: true,
+    discordLogSentAt: null
+  };
 
+  stockData.movements.unshift(movement);
   stockData.movements = stockData.movements.slice(0, 500);
   stockData.updatedAt = now;
+  return movement;
 }
 
 function calcularConsumo(data, itemId, dias) {
@@ -350,7 +352,550 @@ function validarItemId(itemId) {
   return validIds.has(id) ? id : "";
 }
 
-function iniciarWeb() {
+
+
+const VEHICLE_FILE_NAME = "topgear-web-vehicles.json";
+let vehicleWeeklyTimer = null;
+
+function vehicleFilePath() {
+  return path.join(elegirDataDir(), VEHICLE_FILE_NAME);
+}
+
+function crearDatosVehiculosIniciales() {
+  return {
+    version: 1,
+    purchases: [],
+    sales: [],
+    lastWeeklyReportKey: "",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function numeroDinero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number) : NaN;
+}
+
+function fechaIsoDesdeInput(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return new Date().toISOString();
+
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12, 0, 0, 0);
+  if (Number.isNaN(date.getTime())) return new Date().toISOString();
+  return date.toISOString();
+}
+
+function normalizarDatosVehiculos(raw) {
+  const initial = crearDatosVehiculosIniciales();
+  const data = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : initial;
+
+  data.version = 1;
+  data.purchases = Array.isArray(data.purchases) ? data.purchases : [];
+  data.sales = Array.isArray(data.sales) ? data.sales : [];
+  data.lastWeeklyReportKey = String(data.lastWeeklyReportKey || "");
+  data.createdAt = data.createdAt || initial.createdAt;
+  data.updatedAt = new Date().toISOString();
+  return data;
+}
+
+function cargarDatosVehiculos() {
+  return normalizarDatosVehiculos(leerJsonSeguro(vehicleFilePath(), crearDatosVehiculosIniciales()));
+}
+
+function guardarDatosVehiculos(data) {
+  guardarJsonSeguro(vehicleFilePath(), normalizarDatosVehiculos(data));
+}
+
+function compraPendiente(compra) {
+  return compra && !compra.soldAt && !compra.saleId;
+}
+
+function datosVehiculosAdmin() {
+  const data = cargarDatosVehiculos();
+  return {
+    purchases: data.purchases.filter(compraPendiente).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
+    sales: data.sales.slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 200),
+    currentWeek: resumenVentasRango(data.sales, rangoSemanaActualVehiculos()),
+    updatedAt: data.updatedAt
+  };
+}
+
+function inicioSemanaLunes(date = new Date()) {
+  const result = new Date(date.getTime());
+  result.setHours(0, 0, 0, 0);
+  const day = result.getDay();
+  result.setDate(result.getDate() + (day === 0 ? -6 : 1 - day));
+  return result;
+}
+
+function rangoSemanaActualVehiculos(date = new Date()) {
+  const start = inicioSemanaLunes(date);
+  const endExclusive = new Date(start.getTime());
+  endExclusive.setDate(endExclusive.getDate() + 7);
+  return { start, endExclusive };
+}
+
+function rangoSemanaAnteriorVehiculos(date = new Date()) {
+  const endExclusive = inicioSemanaLunes(date);
+  const start = new Date(endExclusive.getTime());
+  start.setDate(start.getDate() - 7);
+  return { start, endExclusive };
+}
+
+function fechaCorta(date) {
+  const d = new Date(date);
+  return new Intl.DateTimeFormat("es-ES", {
+    timeZone: config.TIMEZONE || "Europe/Madrid",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  }).format(d);
+}
+
+function claveRangoSemanal(range) {
+  const local = new Date(range.start.getTime());
+  const year = local.getFullYear();
+  const month = String(local.getMonth() + 1).padStart(2, "0");
+  const day = String(local.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function dineroDiscord(value) {
+  return `${new Intl.NumberFormat("es-ES").format(Math.round(Number(value) || 0))}${config.CURRENCY_SUFFIX || "$"}`;
+}
+
+function resumenVentasRango(sales, range) {
+  const startMs = range.start.getTime();
+  const endMs = range.endExclusive.getTime();
+  const filtered = (Array.isArray(sales) ? sales : []).filter(sale => {
+    const ms = new Date(sale.createdAt || 0).getTime();
+    return Number.isFinite(ms) && ms >= startMs && ms < endMs;
+  });
+
+  const bySeller = new Map();
+
+  for (const sale of filtered) {
+    const seller = String(sale.seller || "Sin vendedor").trim() || "Sin vendedor";
+    if (!bySeller.has(seller)) {
+      bySeller.set(seller, {
+        seller,
+        count: 0,
+        totalPurchase: 0,
+        totalSale: 0,
+        totalProfit: 0,
+        vehicles: []
+      });
+    }
+
+    const row = bySeller.get(seller);
+    const purchasePrice = Number(sale.purchasePrice) || 0;
+    const salePrice = Number(sale.salePrice) || 0;
+    const profit = salePrice - purchasePrice;
+
+    row.count += 1;
+    row.totalPurchase += purchasePrice;
+    row.totalSale += salePrice;
+    row.totalProfit += profit;
+    row.vehicles.push({
+      vehicle: sale.vehicle || "Vehículo",
+      plate: sale.plate || "",
+      purchasePrice,
+      salePrice,
+      profit
+    });
+  }
+
+  const sellers = [...bySeller.values()]
+    .map(row => ({
+      ...row,
+      tenPercentSale: Math.round(row.totalSale * 0.10),
+      tenPercentProfit: Math.round(row.totalProfit * 0.10)
+    }))
+    .sort((a, b) => b.totalSale - a.totalSale || a.seller.localeCompare(b.seller, "es"));
+
+  return {
+    start: range.start.toISOString(),
+    endExclusive: range.endExclusive.toISOString(),
+    count: filtered.length,
+    totalPurchase: sellers.reduce((sum, row) => sum + row.totalPurchase, 0),
+    totalSale: sellers.reduce((sum, row) => sum + row.totalSale, 0),
+    totalProfit: sellers.reduce((sum, row) => sum + row.totalProfit, 0),
+    tenPercentSale: sellers.reduce((sum, row) => sum + row.tenPercentSale, 0),
+    tenPercentProfit: sellers.reduce((sum, row) => sum + row.tenPercentProfit, 0),
+    sellers
+  };
+}
+
+async function enviarCanalDiscord(client, channelId, payload) {
+  if (!client || !channelId) return false;
+
+  for (let intento = 1; intento <= 2; intento += 1) {
+    try {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel?.isTextBased()) throw new Error("El canal no es de texto.");
+      await channel.send(payload);
+      return true;
+    } catch (error) {
+      console.error(`No se pudo enviar al canal ${channelId} (intento ${intento}/2):`, error.message);
+      if (intento < 2) await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+  }
+
+  return false;
+}
+
+async function enviarLogPedidoWeb(client, parsed) {
+  const channelId = config.CHANNELS.WEB_ORDERS || "1520969599343136830";
+  const lines = parsed.lines.map(line => `• **${line.quantity}x ${line.label}** — ${dineroDiscord(line.lineTotal)}`);
+  const description = lines.join("\n").slice(0, 3900) || "Sin líneas de pedido.";
+
+  return enviarCanalDiscord(client, channelId, {
+    embeds: [{
+      color: 0x00A86B,
+      title: "🧾 Nuevo pedido desde la web",
+      description,
+      fields: [
+        { name: "Subtotal", value: dineroDiscord(parsed.subtotal), inline: true },
+        { name: "Descuento", value: `${parsed.discount}%`, inline: true },
+        { name: "Total", value: dineroDiscord(parsed.total), inline: true }
+      ],
+      footer: { text: "Top Gear · Pedido web" },
+      timestamp: new Date().toISOString()
+    }]
+  });
+}
+
+async function reintentarLogsPedidosPendientes(client) {
+  const data = cargarStock();
+  const pending = (data.movements || [])
+    .filter(movement => movement.type === "send" && movement.discordLogRequired === true && !movement.discordLogSentAt)
+    .slice()
+    .reverse();
+
+  if (!pending.length) return;
+
+  let changed = false;
+  for (const movement of pending) {
+    const sent = await enviarLogPedidoWeb(client, movement);
+    if (!sent) break;
+    movement.discordLogSentAt = new Date().toISOString();
+    changed = true;
+  }
+
+  if (changed) guardarStock(data);
+}
+
+function embedsResumenVehiculos(summary) {
+  const embeds = [{
+    color: 0x00A86B,
+    title: "🚗 Resumen semanal de vehículos",
+    description: summary.count
+      ? `Ventas realizadas del **${fechaCorta(summary.start)}** al **${fechaCorta(new Date(new Date(summary.endExclusive).getTime() - 1))}**.`
+      : `No se registraron vehículos vendidos del **${fechaCorta(summary.start)}** al **${fechaCorta(new Date(new Date(summary.endExclusive).getTime() - 1))}**.`,
+    fields: [
+      { name: "Vehículos vendidos", value: String(summary.count), inline: true },
+      { name: "Total precios de venta", value: dineroDiscord(summary.totalSale), inline: true },
+      { name: "Beneficio final", value: dineroDiscord(summary.totalProfit), inline: true },
+      { name: "10% de las ventas", value: dineroDiscord(summary.tenPercentSale), inline: true },
+      { name: "10% del beneficio", value: dineroDiscord(summary.tenPercentProfit), inline: true }
+    ],
+    footer: { text: "Top Gear · Cierre semanal automático" },
+    timestamp: new Date().toISOString()
+  }];
+
+  for (const seller of summary.sellers) {
+    const vehicleLines = seller.vehicles.map(vehicle => {
+      const plate = vehicle.plate ? ` · ${vehicle.plate}` : "";
+      return `• **${vehicle.vehicle}**${plate}\n  Compra: ${dineroDiscord(vehicle.purchasePrice)} · Venta: ${dineroDiscord(vehicle.salePrice)} · Beneficio: ${dineroDiscord(vehicle.profit)}`;
+    });
+
+    embeds.push({
+      color: 0x0B0F0C,
+      title: `👤 ${seller.seller}`.slice(0, 256),
+      description: vehicleLines.join("\n").slice(0, 3900) || "Sin detalle.",
+      fields: [
+        { name: "Vehículos", value: String(seller.count), inline: true },
+        { name: "Ventas", value: dineroDiscord(seller.totalSale), inline: true },
+        { name: "Beneficio", value: dineroDiscord(seller.totalProfit), inline: true },
+        { name: "10% ventas", value: dineroDiscord(seller.tenPercentSale), inline: true },
+        { name: "10% beneficio", value: dineroDiscord(seller.tenPercentProfit), inline: true }
+      ]
+    });
+  }
+
+  return embeds;
+}
+
+async function enviarResumenSemanalVehiculos(client, referenceDate = new Date(), force = false) {
+  const channelId = config.CHANNELS.VEHICLE_WEEKLY || "1527364846541078718";
+  const data = cargarDatosVehiculos();
+  const range = rangoSemanaAnteriorVehiculos(referenceDate);
+  const reportKey = claveRangoSemanal(range);
+
+  if (!force && data.lastWeeklyReportKey === reportKey) return false;
+
+  const summary = resumenVentasRango(data.sales, range);
+  const embeds = embedsResumenVehiculos(summary);
+  let sent = true;
+
+  for (const embed of embeds) {
+    const ok = await enviarCanalDiscord(client, channelId, { embeds: [embed] });
+    if (!ok) {
+      sent = false;
+      break;
+    }
+  }
+
+  if (sent) {
+    data.lastWeeklyReportKey = reportKey;
+    data.lastWeeklyReportAt = new Date().toISOString();
+    guardarDatosVehiculos(data);
+    console.log(`Resumen semanal de vehículos enviado. Semana: ${reportKey}.`);
+  }
+
+  return sent;
+}
+
+function milisegundosHastaProximoLunes() {
+  const now = new Date();
+  const next = new Date(now.getTime());
+  next.setHours(0, 0, 0, 0);
+  let days = (8 - next.getDay()) % 7;
+  if (days === 0 || next.getTime() <= now.getTime()) days = days === 0 ? 7 : days;
+  next.setDate(next.getDate() + days);
+  return Math.max(1000, next.getTime() - now.getTime());
+}
+
+function programarResumenSemanalVehiculos(client) {
+  if (vehicleWeeklyTimer) clearTimeout(vehicleWeeklyTimer);
+
+  const delay = milisegundosHastaProximoLunes();
+  vehicleWeeklyTimer = setTimeout(async () => {
+    await enviarResumenSemanalVehiculos(client).catch(error => {
+      console.error("Error enviando el resumen semanal de vehículos:", error);
+    });
+    programarResumenSemanalVehiculos(client);
+  }, delay);
+
+  console.log(`Próximo resumen semanal de vehículos programado en ${Math.round(delay / 60000)} minutos.`);
+}
+
+function iniciarResumenSemanalVehiculos(client) {
+  let started = false;
+  const start = async () => {
+    if (started) return;
+    started = true;
+
+    await reintentarLogsPedidosPendientes(client).catch(error => {
+      console.error("No se pudieron reenviar los logs de pedidos pendientes:", error);
+    });
+    await enviarResumenSemanalVehiculos(client).catch(error => {
+      console.error("No se pudo comprobar el resumen semanal pendiente:", error);
+    });
+    programarResumenSemanalVehiculos(client);
+  };
+
+  if (client?.isReady?.()) start();
+  else {
+    client?.once?.("clientReady", start);
+    client?.once?.("ready", start);
+  }
+}
+
+function paginaVehiculosHtml() {
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Top Gear | Vehículos</title>
+  <style>
+    :root { --bg:#050807; --panel:#0f1813; --border:rgba(255,255,255,.11); --text:#f6fff9; --muted:#9fb1a8; --green:#00b875; --green2:#087d53; --red:#c01718; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; padding:28px; color:var(--text); font-family:Inter,system-ui,Segoe UI,Arial,sans-serif; background:radial-gradient(circle at 12% 0%,rgba(0,184,116,.25),transparent 30%),linear-gradient(135deg,#07110c,#040706 60%,#07120d); }
+    a { color:inherit; text-decoration:none; }
+    button,input,select { font:inherit; }
+    button { cursor:pointer; border:0; font-weight:850; }
+    .page { width:min(1250px,100%); margin:auto; }
+    .top { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:22px; flex-wrap:wrap; }
+    h1,h2 { margin:0; }
+    .subtitle,.hint { color:var(--muted); }
+    .links { display:flex; gap:10px; flex-wrap:wrap; }
+    .link,.secondary { padding:12px 15px; border-radius:13px; background:rgba(255,255,255,.06); border:1px solid var(--border); color:var(--text); }
+    .card { background:linear-gradient(180deg,rgba(15,24,19,.94),rgba(8,13,10,.9)); border:1px solid var(--border); border-radius:22px; margin-bottom:18px; overflow:hidden; box-shadow:0 24px 70px rgba(0,0,0,.38); }
+    .head { padding:20px 22px; border-bottom:1px solid var(--border); }
+    .body { padding:20px 22px; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+    .field { display:grid; gap:7px; }
+    .field.full { grid-column:1/-1; }
+    label { color:var(--muted); font-size:13px; font-weight:800; }
+    input,select { width:100%; min-height:46px; border-radius:13px; border:1px solid var(--border); background:rgba(255,255,255,.055); color:var(--text); padding:0 13px; outline:none; }
+    select option { color:#08100b; }
+    .primary { min-height:48px; padding:0 18px; border-radius:14px; color:white; background:linear-gradient(135deg,var(--green),var(--green2)); }
+    .danger { min-height:44px; padding:0 15px; border-radius:13px; color:#ffd9d9; background:rgba(192,23,24,.14); border:1px solid rgba(192,23,24,.35); }
+    .login { max-width:520px; margin:50px auto; }
+    .dashboard { display:none; }
+    .dashboard.open { display:block; }
+    .columns { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .message { display:none; margin-top:13px; padding:12px 13px; border-radius:13px; }
+    .message.ok { display:block; color:#d6ffed; background:rgba(0,184,116,.13); border:1px solid rgba(0,184,116,.3); }
+    .message.error { display:block; color:#ffd6d6; background:rgba(192,23,24,.13); border:1px solid rgba(192,23,24,.3); }
+    .stats { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
+    .stat { padding:16px; border-radius:17px; border:1px solid var(--border); background:rgba(255,255,255,.045); }
+    .stat span { color:var(--muted); font-size:12px; display:block; margin-bottom:6px; }
+    .stat strong { font-size:22px; }
+    .list { display:grid; gap:10px; }
+    .row { padding:13px; border-radius:15px; border:1px solid var(--border); background:rgba(255,255,255,.04); }
+    .row strong { display:block; }
+    .meta { color:var(--muted); font-size:13px; margin-top:5px; line-height:1.45; }
+    @media(max-width:900px){ .columns,.grid{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}.field.full{grid-column:auto} }
+    @media(max-width:520px){ body{padding:16px}.stats{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="top">
+      <div><h1>Vehículos comprados y vendidos</h1><p class="subtitle">Registra cada compra y después asígnala al vendedor cuando se venda.</p></div>
+      <div class="links"><a class="link" href="/">Calculadora</a><a class="link" href="/stock">Stock</a></div>
+    </div>
+
+    <section class="card login" id="loginCard">
+      <div class="head"><h2>Acceso</h2><p class="hint">Usa el mismo PIN de administración del stock.</p></div>
+      <div class="body"><input id="pin" type="password" placeholder="PIN de administración" /><button id="loginBtn" class="primary" style="width:100%;margin-top:12px">Entrar</button><div id="loginMessage" class="message"></div></div>
+    </section>
+
+    <section class="dashboard" id="dashboard">
+      <div class="stats">
+        <div class="stat"><span>Vendidos esta semana</span><strong id="statCount">0</strong></div>
+        <div class="stat"><span>Total ventas</span><strong id="statSales">0</strong></div>
+        <div class="stat"><span>Beneficio</span><strong id="statProfit">0</strong></div>
+        <div class="stat"><span>10% ventas</span><strong id="statSales10">0</strong></div>
+        <div class="stat"><span>10% beneficio</span><strong id="statProfit10">0</strong></div>
+      </div>
+
+      <div class="columns">
+        <section class="card"><div class="head"><h2>Registrar compra</h2><p class="hint">Vehículo que ha comprado el negocio y queda pendiente de venta.</p></div><div class="body grid">
+          <div class="field"><label>Vehículo</label><input id="buyVehicle" placeholder="Ej. Sultan RS" /></div>
+          <div class="field"><label>Matrícula / referencia</label><input id="buyPlate" placeholder="Opcional" /></div>
+          <div class="field"><label>Persona que lo compró</label><input id="buyBuyer" placeholder="Nombre" /></div>
+          <div class="field"><label>Precio de compra</label><input id="buyPrice" type="number" min="0" placeholder="0" /></div>
+          <div class="field"><label>Fecha</label><input id="buyDate" type="date" /></div>
+          <div class="field" style="align-self:end"><button id="buyBtn" class="primary">Guardar compra</button></div>
+          <div class="field full"><div id="buyMessage" class="message"></div></div>
+        </div></section>
+
+        <section class="card"><div class="head"><h2>Registrar venta</h2><p class="hint">Selecciona un vehículo comprado y añade quién lo ha vendido.</p></div><div class="body grid">
+          <div class="field full"><label>Vehículo pendiente</label><select id="salePurchase"></select></div>
+          <div class="field"><label>Vendedor</label><input id="saleSeller" placeholder="Nombre de la persona" /></div>
+          <div class="field"><label>Precio de venta</label><input id="salePrice" type="number" min="0" placeholder="0" /></div>
+          <div class="field"><label>Fecha</label><input id="saleDate" type="date" /></div>
+          <div class="field" style="align-self:end"><button id="saleBtn" class="primary">Guardar venta</button></div>
+          <div class="field full"><div id="saleMessage" class="message"></div></div>
+        </div></section>
+      </div>
+
+      <section class="card"><div class="head"><h2>Vehículos pendientes de vender</h2></div><div class="body"><div id="purchases" class="list"></div></div></section>
+      <section class="card"><div class="head"><h2>Últimas ventas</h2></div><div class="body"><div id="sales" class="list"></div></div></section>
+    </section>
+  </main>
+<script>
+  let PIN = localStorage.getItem("topgear_vehicle_pin") || "";
+  let DATA = null;
+  const REQUIRES_PIN = ${JSON.stringify(requierePin())};
+  const money = function(value) { return new Intl.NumberFormat("es-ES").format(Math.round(Number(value) || 0)) + ${JSON.stringify(config.CURRENCY_SUFFIX || "$")}; };
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById("buyDate").value = today;
+  document.getElementById("saleDate").value = today;
+
+  function message(el, type, text) { el.className = "message" + (type ? " " + type : ""); el.textContent = text || ""; }
+  async function request(url, options) {
+    const opts = options || {};
+    opts.headers = Object.assign({}, opts.headers || {}, { "Content-Type":"application/json", "x-admin-pin":PIN });
+    const response = await fetch(url, opts);
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || "No se pudo completar la operación.");
+    return result;
+  }
+
+  function render() {
+    const summary = DATA.currentWeek || {};
+    document.getElementById("statCount").textContent = summary.count || 0;
+    document.getElementById("statSales").textContent = money(summary.totalSale);
+    document.getElementById("statProfit").textContent = money(summary.totalProfit);
+    document.getElementById("statSales10").textContent = money(summary.tenPercentSale);
+    document.getElementById("statProfit10").textContent = money(summary.tenPercentProfit);
+
+    const select = document.getElementById("salePurchase");
+    select.innerHTML = "";
+    (DATA.purchases || []).forEach(function(item) {
+      const option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = item.vehicle + (item.plate ? " · " + item.plate : "") + " · compra " + money(item.purchasePrice);
+      select.appendChild(option);
+    });
+    if (!select.options.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "No hay vehículos pendientes"; select.appendChild(option); }
+
+    const purchases = document.getElementById("purchases"); purchases.innerHTML = "";
+    if (!(DATA.purchases || []).length) purchases.innerHTML = '<div class="row"><span class="meta">No hay vehículos pendientes.</span></div>';
+    (DATA.purchases || []).forEach(function(item) {
+      const row = document.createElement("div"); row.className = "row";
+      const title = document.createElement("strong");
+      title.textContent = item.vehicle + (item.plate ? " · " + item.plate : "");
+      const meta = document.createElement("div"); meta.className = "meta";
+      meta.textContent = "Compra: " + money(item.purchasePrice) + " · Registrado por: " + (item.buyer || "Sin indicar") + " · " + new Date(item.createdAt).toLocaleDateString("es-ES");
+      row.appendChild(title); row.appendChild(meta); purchases.appendChild(row);
+    });
+
+    const sales = document.getElementById("sales"); sales.innerHTML = "";
+    if (!(DATA.sales || []).length) sales.innerHTML = '<div class="row"><span class="meta">Todavía no hay ventas.</span></div>';
+    (DATA.sales || []).forEach(function(item) {
+      const row = document.createElement("div"); row.className = "row";
+      const title = document.createElement("strong");
+      title.textContent = item.vehicle + (item.plate ? " · " + item.plate : "");
+      const meta = document.createElement("div"); meta.className = "meta";
+      meta.textContent = "Vendedor: " + item.seller + " · Compra: " + money(item.purchasePrice) + " · Venta: " + money(item.salePrice) + " · Beneficio: " + money(item.profit) + " · " + new Date(item.createdAt).toLocaleDateString("es-ES");
+      row.appendChild(title); row.appendChild(meta); sales.appendChild(row);
+    });
+  }
+
+  async function load() { const result = await request("/api/admin/vehicles"); DATA = result.data; render(); document.getElementById("loginCard").style.display = "none"; document.getElementById("dashboard").classList.add("open"); }
+
+  document.getElementById("loginBtn").onclick = async function() {
+    PIN = document.getElementById("pin").value.trim();
+    try { await request("/api/admin/login", { method:"POST", body:JSON.stringify({ pin:PIN }) }); localStorage.setItem("topgear_vehicle_pin", PIN); await load(); }
+    catch(error) { message(document.getElementById("loginMessage"), "error", error.message); }
+  };
+
+  document.getElementById("buyBtn").onclick = async function() {
+    try {
+      const result = await request("/api/admin/vehicles/purchase", { method:"POST", body:JSON.stringify({ vehicle:document.getElementById("buyVehicle").value, plate:document.getElementById("buyPlate").value, buyer:document.getElementById("buyBuyer").value, purchasePrice:document.getElementById("buyPrice").value, date:document.getElementById("buyDate").value }) });
+      DATA = result.data; render(); message(document.getElementById("buyMessage"), "ok", "Compra guardada.");
+      document.getElementById("buyVehicle").value = ""; document.getElementById("buyPlate").value = ""; document.getElementById("buyPrice").value = "";
+    } catch(error) { message(document.getElementById("buyMessage"), "error", error.message); }
+  };
+
+  document.getElementById("saleBtn").onclick = async function() {
+    try {
+      const result = await request("/api/admin/vehicles/sale", { method:"POST", body:JSON.stringify({ purchaseId:document.getElementById("salePurchase").value, seller:document.getElementById("saleSeller").value, salePrice:document.getElementById("salePrice").value, date:document.getElementById("saleDate").value }) });
+      DATA = result.data; render(); message(document.getElementById("saleMessage"), "ok", "Venta guardada."); document.getElementById("salePrice").value = "";
+    } catch(error) { message(document.getElementById("saleMessage"), "error", error.message); }
+  };
+
+  if (!REQUIRES_PIN) {
+    PIN = "";
+    load().catch(function(error){ message(document.getElementById("loginMessage"), "error", error.message); });
+  } else if (PIN) {
+    document.getElementById("pin").value = PIN;
+    load().catch(function(){ localStorage.removeItem("topgear_vehicle_pin"); });
+  }
+</script>
+</body>
+</html>`;
+}
+
+function iniciarWeb(client) {
   const app = express();
   const PORT = process.env.PORT || 3000;
 
@@ -368,7 +913,7 @@ function iniciarWeb() {
     res.json(datosPublicos());
   });
 
-  app.post("/api/enviar", (req, res) => {
+  app.post("/api/enviar", async (req, res) => {
     const parsed = validarSeleccion(req.body);
 
     if (parsed.error) {
@@ -382,8 +927,14 @@ function iniciarWeb() {
       return res.status(400).json({ ok: false, error: check.error });
     }
 
-    descontarStock(stockData, parsed);
+    const movement = descontarStock(stockData, parsed);
     guardarStock(stockData);
+
+    const logSent = await enviarLogPedidoWeb(client, parsed);
+    if (logSent) {
+      movement.discordLogSentAt = new Date().toISOString();
+      guardarStock(stockData);
+    }
 
     res.json({
       ok: true,
@@ -498,6 +1049,97 @@ function iniciarWeb() {
     guardarStock(data);
 
     res.json({ ok: true, message: "Pedido registrado. Stock actualizado.", data: resumenAdminStock(), publicData: datosPublicos() });
+  });
+
+
+  app.get("/api/admin/vehicles", (req, res) => {
+    if (!validarPin(req)) {
+      return res.status(401).json({ ok: false, error: "PIN incorrecto." });
+    }
+
+    res.json({ ok: true, data: datosVehiculosAdmin() });
+  });
+
+  app.post("/api/admin/vehicles/purchase", (req, res) => {
+    if (!validarPin(req)) {
+      return res.status(401).json({ ok: false, error: "PIN incorrecto." });
+    }
+
+    const vehicle = String(req.body?.vehicle || "").trim().slice(0, 100);
+    const plate = String(req.body?.plate || "").trim().slice(0, 40);
+    const buyer = String(req.body?.buyer || "").trim().slice(0, 100);
+    const purchasePrice = numeroDinero(req.body?.purchasePrice);
+
+    if (!vehicle) return res.status(400).json({ ok: false, error: "Debes indicar el vehículo." });
+    if (!Number.isFinite(purchasePrice) || purchasePrice < 0) {
+      return res.status(400).json({ ok: false, error: "El precio de compra no es válido." });
+    }
+
+    const data = cargarDatosVehiculos();
+    const now = new Date().toISOString();
+    data.purchases.unshift({
+      id: `vehicle_buy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      vehicle,
+      plate,
+      buyer,
+      purchasePrice,
+      createdAt: fechaIsoDesdeInput(req.body?.date),
+      registeredAt: now,
+      soldAt: null,
+      saleId: null
+    });
+    data.purchases = data.purchases.slice(0, 5000);
+    guardarDatosVehiculos(data);
+
+    res.json({ ok: true, data: datosVehiculosAdmin() });
+  });
+
+  app.post("/api/admin/vehicles/sale", (req, res) => {
+    if (!validarPin(req)) {
+      return res.status(401).json({ ok: false, error: "PIN incorrecto." });
+    }
+
+    const purchaseId = String(req.body?.purchaseId || "").trim();
+    const seller = String(req.body?.seller || "").trim().slice(0, 100);
+    const salePrice = numeroDinero(req.body?.salePrice);
+
+    if (!purchaseId) return res.status(400).json({ ok: false, error: "Selecciona un vehículo comprado." });
+    if (!seller) return res.status(400).json({ ok: false, error: "Debes indicar quién ha vendido el vehículo." });
+    if (!Number.isFinite(salePrice) || salePrice < 0) {
+      return res.status(400).json({ ok: false, error: "El precio de venta no es válido." });
+    }
+
+    const data = cargarDatosVehiculos();
+    const purchase = data.purchases.find(item => item.id === purchaseId && compraPendiente(item));
+    if (!purchase) return res.status(404).json({ ok: false, error: "Ese vehículo ya no está pendiente o no existe." });
+
+    const saleId = `vehicle_sale_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const createdAt = fechaIsoDesdeInput(req.body?.date);
+    const profit = salePrice - Number(purchase.purchasePrice || 0);
+
+    data.sales.unshift({
+      id: saleId,
+      purchaseId: purchase.id,
+      vehicle: purchase.vehicle,
+      plate: purchase.plate || "",
+      buyer: purchase.buyer || "",
+      seller,
+      purchasePrice: Number(purchase.purchasePrice || 0),
+      salePrice,
+      profit,
+      createdAt,
+      registeredAt: new Date().toISOString()
+    });
+    purchase.soldAt = createdAt;
+    purchase.saleId = saleId;
+    data.sales = data.sales.slice(0, 5000);
+    guardarDatosVehiculos(data);
+
+    res.json({ ok: true, data: datosVehiculosAdmin() });
+  });
+
+  app.get("/vehiculos", (req, res) => {
+    res.send(paginaVehiculosHtml());
   });
 
   app.get("/stock", (req, res) => {
@@ -938,7 +1580,7 @@ function iniciarWeb() {
         <p class="subtitle">Registra los pedidos que haces, actualiza el stock y calcula el mínimo recomendado con un 30% de margen.</p>
       </div>
 
-      <a class="nav-button" href="/">Volver a la calculadora</a>
+      <div style="display:flex;gap:10px;flex-wrap:wrap"><a class="nav-button" href="/">Volver a la calculadora</a><a class="nav-button" href="/vehiculos">Vehículos</a></div>
     </div>
 
     <section class="card login" id="loginCard">
@@ -1877,6 +2519,7 @@ function iniciarWeb() {
         <p class="subtitle">Selecciona servicios, aplica descuentos y pulsa Enviar para descontar el stock.</p>
         <div class="hero-actions">
           <a class="link-button" href="/stock">Control de stock</a>
+          <a class="link-button" href="/vehiculos">Vehículos</a>
         </div>
       </div>
 
@@ -2251,7 +2894,10 @@ function iniciarWeb() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Web calculadora activa en puerto ${PORT}`);
     console.log(`Archivo de stock web: ${stockFilePath()}`);
+    console.log(`Archivo de vehículos web: ${vehicleFilePath()}`);
   });
+
+  iniciarResumenSemanalVehiculos(client);
 }
 
 module.exports = { iniciarWeb };
