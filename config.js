@@ -1,1 +1,151 @@
-function env(name, fallback = "") { const value = process.env[name]; if (value === undefined || value === null || String(value).trim() === "") return fallback; return String(value).trim(); } function envAny(names, fallback = "") { for (const name of names) { const value = env(name, ""); if (value) return value; } return fallback; } function extraerId(value) { const text = String(value || "").trim(); if (!text) return ""; const match = text.match(/\d{15,25}/); return match ? match[0] : text; } function envId(names, fallback = "") { return extraerId(envAny(names, fallback)); } function envList(name, fallback = "") { return env(name, fallback) .split(/[;,\s]+/g) .map(value => value.trim()) .filter(Boolean); } function envIdList(names, fallback = "") { const raw = Array.isArray(names) ? envAny(names, fallback) : env(names, fallback); return raw .split(/[;,\s]+/g) .map(extraerId) .filter(Boolean); } function envBool(name, fallback = false) { const value = env(name, "").toLowerCase(); if (!value) return fallback; return ["1", "true", "yes", "si", "sí", "on"].includes(value); } function envNumber(name, fallback = 0) { const value = Number(env(name, "")); return Number.isFinite(value) ? value : fallback; } const DEFAULT_CALCULATOR_ITEMS = [ { id: "awd", label: "AWD", price: 10000 }, { id: "rwd", label: "RWD", price: 10000 }, { id: "fwd", label: "FWD", price: 10000 }, { id: "slick", label: "Slick", price: 6500 }, { id: "semi", label: "Semi", price: 5500 }, { id: "offroad", label: "Off-road", price: 5700 }, { id: "frenos_ceramicos", label: "Frenos cerámicos", price: 20000 }, { id: "suspension", label: "Suspensión", price: 6800 }, { id: "cosmeticos", label: "Cosméticos", price: 4000 }, { id: "pintura", label: "Pintura", price: 900 }, { id: "rines", label: "Rines", price: 10000 }, { id: "humo", label: "Humo", price: 5500 }, { id: "extras", label: "Extras", price: 7000 }, { id: "limpieza", label: "Limpieza", price: 600 }, { id: "reparacion", label: "Reparación", price: 800 }, { id: "rendimiento", label: "Rendimiento", price: 10000 }, { id: "turbo", label: "Turbo", price: 30000 }, { id: "v8", label: "V8", price: 50000 }, { id: "full", label: "Full", price: 116500 } ]; function getCalculatorItems() { const raw = env("CALCULATOR_ITEMS_JSON", ""); if (!raw) return DEFAULT_CALCULATOR_ITEMS; try { const parsed = JSON.parse(raw); if (!Array.isArray(parsed)) return DEFAULT_CALCULATOR_ITEMS; const normalized = parsed .map(item => ({ id: String(item.id || item.label || "").trim().toLowerCase().replace(/[^a-z0-9_\-]/g, "_"), label: String(item.label || item.id || "").trim(), price: Number(item.price) })) .filter(item => item.id && item.label && Number.isFinite(item.price) && item.price >= 0) .slice(0, 25); return normalized.length ? normalized : DEFAULT_CALCULATOR_ITEMS; } catch { return DEFAULT_CALCULATOR_ITEMS; } } module.exports = { TOKEN: env("DISCORD_TOKEN"), GUILD_ID: envId(["GUILD_ID", "SERVER_ID"]), WEB_URL: env("WEB_URL"), TIMEZONE: env("TZ", env("TIMEZONE", "Europe/Madrid")), DATA_DIR: env("DATA_DIR", env("STOCK_DATA_DIR", env("RAILWAY_VOLUME_MOUNT_PATH", ""))), DATA_FILE: env("DATA_FILE"), ADMIN_BYPASS: envBool("ADMIN_BYPASS", true), WEEK_START: env("WEEK_START", "monday").toLowerCase(), CURRENCY_SUFFIX: env("CURRENCY_SUFFIX", "$"), CHANNELS: { FICHAJES: envId(["FICHAJES_CHANNEL_ID", "FICHAJE_CHANNEL_ID", "CLOCK_CHANNEL_ID", "CHANNEL_ID"]), PAGOS: envId(["PAGOS_CHANNEL_ID", "PAGO_CHANNEL_ID", "PAYMENTS_CHANNEL_ID", "PAYMENT_CHANNEL_ID"]), CALCULADORA: envId(["CALCULADORA_CHANNEL_ID", "CALCULATOR_CHANNEL_ID", "CALCULADORA_ID"]), POSTULANTES: envId(["POSTULANTES_CHANNEL_ID", "POSTULACIONES_CHANNEL_ID", "APPLICATIONS_CHANNEL_ID", "POSTULANTES_ID"]), APPLICATION_CATEGORY: envId(["APPLICATION_CATEGORY_ID", "POSTULACIONES_CATEGORY_ID", "TICKETS_CATEGORY_ID", "TICKET_CATEGORY_ID"]), WELCOME: envId(["WELCOME_CHANNEL_ID", "BIENVENIDA_CHANNEL_ID", "WELCOME_ID"]), GOODBYE: envId(["GOODBYE_CHANNEL_ID", "DESPEDIDA_CHANNEL_ID", "LEAVE_CHANNEL_ID"]), LOGS: envId(["LOG_CHANNEL_ID", "LOGS_CHANNEL_ID", "AUDIT_CHANNEL_ID"]) }, ROLES: { ADMINS: envIdList(["ADMIN_ROLE_IDS", "ADMINS_ROLE_IDS", "BOSS_ROLE_IDS", "BOSS_ROLES"]), MANAGERS: envIdList(["MANAGER_ROLE_IDS", "MANAGERS_ROLE_IDS", "STAFF_ROLE_IDS"]), EMPLOYEES: envIdList(["EMPLOYEE_ROLE_IDS", "EMPLOYEES_ROLE_IDS", "WORKER_ROLE_IDS"]), TRACKED_EMPLOYEES: envIdList(["TRACKED_EMPLOYEE_ROLE_IDS", "STAFF_TRACKED_ROLE_IDS", "ALL_EMPLOYEE_ROLE_IDS"]), PAYMENTS: envIdList(["PAYMENT_ROLE_IDS", "PAYMENTS_ROLE_IDS", "PAGOS_ROLE_IDS"]), APPLICATION_REVIEWERS: envIdList(["APPLICATION_REVIEWER_ROLE_IDS", "POSTULANTES_REVIEWER_ROLE_IDS", "REVIEWER_ROLE_IDS"]), APPLICATION_ACCEPT: envIdList(["APPLICATION_ACCEPT_ROLE_IDS", "POSTULANTES_ACCEPT_ROLE_IDS", "ACCEPTED_APPLICANT_ROLE_IDS", "AUTO_ACCEPT_ROLE_IDS"]), APPLICANT: envIdList(["APPLICANT_ROLE_IDS", "POSTULANTE_ROLE_IDS", "POSTULANT_ROLE_IDS"], "1515341525544865882"), JOIN: envIdList(["JOIN_ROLE_IDS", "AUTO_JOIN_ROLE_IDS", "WELCOME_ROLE_IDS"]) }, AUTO_PUBLISH_PANELS: envBool("AUTO_PUBLISH_PANELS", true), CALCULATOR_ITEMS: getCalculatorItems(), CALCULATOR_DISCOUNTS: envList("CALCULATOR_DISCOUNTS", "0,5,10,15") .map(Number) .filter(value => Number.isFinite(value) && value >= 0 && value <= 100) .slice(0, 25), APPLICATION_TICKET_PREFIX: env("APPLICATION_TICKET_PREFIX", "postulacion"), APPLICATION_CHANGE_NICKNAME: envBool("APPLICATION_CHANGE_NICKNAME", true), APPLICATION_DELETE_TICKET_ON_DECISION: envBool("APPLICATION_DELETE_TICKET_ON_DECISION", false), REMOVE_EMPLOYEE_ON_LEAVE: envBool("REMOVE_EMPLOYEE_ON_LEAVE", true), MAX_BACKUPS: envNumber("MAX_BACKUPS", 40) };
+function env(name, fallback = "") {
+  const value = process.env[name];
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  return String(value).trim();
+}
+
+function envAny(names, fallback = "") {
+  for (const name of names) {
+    const value = env(name, "");
+    if (value) return value;
+  }
+  return fallback;
+}
+
+function extraerId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const match = text.match(/\d{15,25}/);
+  return match ? match[0] : text;
+}
+
+function envId(names, fallback = "") {
+  return extraerId(envAny(names, fallback));
+}
+
+function envList(name, fallback = "") {
+  return env(name, fallback)
+    .split(/[;,\s]+/g)
+    .map(value => value.trim())
+    .filter(Boolean);
+}
+
+function envIdList(names, fallback = "") {
+  const raw = Array.isArray(names) ? envAny(names, fallback) : env(names, fallback);
+  return raw
+    .split(/[;,\s]+/g)
+    .map(extraerId)
+    .filter(Boolean);
+}
+
+function envBool(name, fallback = false) {
+  const value = env(name, "").toLowerCase();
+  if (!value) return fallback;
+  return ["1", "true", "yes", "si", "sí", "on"].includes(value);
+}
+
+function envNumber(name, fallback = 0) {
+  const value = Number(env(name, ""));
+  return Number.isFinite(value) ? value : fallback;
+}
+
+const DEFAULT_CALCULATOR_ITEMS = [
+  { id: "awd", label: "AWD", price: 10000 },
+  { id: "rwd", label: "RWD", price: 10000 },
+  { id: "fwd", label: "FWD", price: 10000 },
+  { id: "slick", label: "Slick", price: 6500 },
+  { id: "semi", label: "Semi", price: 5500 },
+  { id: "offroad", label: "Off-road", price: 5700 },
+  { id: "frenos_ceramicos", label: "Frenos cerámicos", price: 20000 },
+  { id: "suspension", label: "Suspensión", price: 6800 },
+  { id: "cosmeticos", label: "Cosméticos", price: 4000 },
+  { id: "pintura", label: "Pintura", price: 900 },
+  { id: "rines", label: "Rines", price: 10000 },
+  { id: "humo", label: "Humo", price: 5500 },
+  { id: "extras", label: "Extras", price: 7000 },
+  { id: "limpieza", label: "Limpieza", price: 600 },
+  { id: "reparacion", label: "Reparación", price: 800 },
+  { id: "rendimiento", label: "Rendimiento", price: 10000 },
+  { id: "turbo", label: "Turbo", price: 30000 },
+  { id: "v8", label: "V8", price: 50000 },
+  { id: "full", label: "Full", price: 116500 }
+];
+
+function getCalculatorItems() {
+  const raw = env("CALCULATOR_ITEMS_JSON", "");
+  if (!raw) return DEFAULT_CALCULATOR_ITEMS;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_CALCULATOR_ITEMS;
+
+    const normalized = parsed
+      .map(item => ({
+        id: String(item.id || item.label || "").trim().toLowerCase().replace(/[^a-z0-9_\-]/g, "_"),
+        label: String(item.label || item.id || "").trim(),
+        price: Number(item.price)
+      }))
+      .filter(item => item.id && item.label && Number.isFinite(item.price) && item.price >= 0)
+      .slice(0, 25);
+
+    return normalized.length ? normalized : DEFAULT_CALCULATOR_ITEMS;
+  } catch {
+    return DEFAULT_CALCULATOR_ITEMS;
+  }
+}
+
+module.exports = {
+  TOKEN: env("DISCORD_TOKEN"),
+  GUILD_ID: envId(["GUILD_ID", "SERVER_ID"]),
+  WEB_URL: env("WEB_URL"),
+  TIMEZONE: env("TZ", env("TIMEZONE", "Europe/Madrid")),
+  DATA_DIR: env("DATA_DIR", env("STOCK_DATA_DIR", env("RAILWAY_VOLUME_MOUNT_PATH", ""))),
+  DATA_FILE: env("DATA_FILE"),
+  ADMIN_BYPASS: envBool("ADMIN_BYPASS", true),
+  WEEK_START: env("WEEK_START", "monday").toLowerCase(),
+  CURRENCY_SUFFIX: env("CURRENCY_SUFFIX", "$"),
+
+  CHANNELS: {
+    FICHAJES: envId(["FICHAJES_CHANNEL_ID", "FICHAJE_CHANNEL_ID", "CLOCK_CHANNEL_ID", "CHANNEL_ID"]),
+    PAGOS: envId(["PAGOS_CHANNEL_ID", "PAGO_CHANNEL_ID", "PAYMENTS_CHANNEL_ID", "PAYMENT_CHANNEL_ID"]),
+    CALCULADORA: envId(["CALCULADORA_CHANNEL_ID", "CALCULATOR_CHANNEL_ID", "CALCULADORA_ID"]),
+    POSTULANTES: envId(["POSTULANTES_CHANNEL_ID", "POSTULACIONES_CHANNEL_ID", "APPLICATIONS_CHANNEL_ID", "POSTULANTES_ID"]),
+    APPLICATION_CATEGORY: envId(["APPLICATION_CATEGORY_ID", "POSTULACIONES_CATEGORY_ID", "TICKETS_CATEGORY_ID", "TICKET_CATEGORY_ID"]),
+    WELCOME: envId(["WELCOME_CHANNEL_ID", "BIENVENIDA_CHANNEL_ID", "WELCOME_ID"]),
+    GOODBYE: envId(["GOODBYE_CHANNEL_ID", "DESPEDIDA_CHANNEL_ID", "LEAVE_CHANNEL_ID"]),
+    LOGS: envId(["LOG_CHANNEL_ID", "LOGS_CHANNEL_ID", "AUDIT_CHANNEL_ID"]),
+
+    // Cada pedido enviado desde la calculadora web se registra aquí.
+    WEB_ORDERS: envId(["WEB_ORDERS_CHANNEL_ID", "ORDERS_LOG_CHANNEL_ID", "PEDIDOS_WEB_CHANNEL_ID"], "1520969599343136830"),
+
+    // Resumen semanal de vehículos, cada lunes a las 00:00.
+    VEHICLE_WEEKLY: envId(["VEHICLE_WEEKLY_CHANNEL_ID", "VEHICULOS_RESUMEN_CHANNEL_ID", "VEHICLE_REPORT_CHANNEL_ID"], "1527364846541078718")
+  },
+
+  ROLES: {
+    ADMINS: envIdList(["ADMIN_ROLE_IDS", "ADMINS_ROLE_IDS", "BOSS_ROLE_IDS", "BOSS_ROLES"]),
+    MANAGERS: envIdList(["MANAGER_ROLE_IDS", "MANAGERS_ROLE_IDS", "STAFF_ROLE_IDS"]),
+    EMPLOYEES: envIdList(["EMPLOYEE_ROLE_IDS", "EMPLOYEES_ROLE_IDS", "WORKER_ROLE_IDS"]),
+    TRACKED_EMPLOYEES: envIdList(["TRACKED_EMPLOYEE_ROLE_IDS", "STAFF_TRACKED_ROLE_IDS", "ALL_EMPLOYEE_ROLE_IDS"]),
+    PAYMENTS: envIdList(["PAYMENT_ROLE_IDS", "PAYMENTS_ROLE_IDS", "PAGOS_ROLE_IDS"]),
+    APPLICATION_REVIEWERS: envIdList(["APPLICATION_REVIEWER_ROLE_IDS", "POSTULANTES_REVIEWER_ROLE_IDS", "REVIEWER_ROLE_IDS"]),
+    APPLICATION_ACCEPT: envIdList(["APPLICATION_ACCEPT_ROLE_IDS", "POSTULANTES_ACCEPT_ROLE_IDS", "ACCEPTED_APPLICANT_ROLE_IDS", "AUTO_ACCEPT_ROLE_IDS"]),
+    APPLICANT: envIdList(["APPLICANT_ROLE_IDS", "POSTULANTE_ROLE_IDS", "POSTULANT_ROLE_IDS"], "1515341525544865882"),
+    JOIN: envIdList(["JOIN_ROLE_IDS", "AUTO_JOIN_ROLE_IDS", "WELCOME_ROLE_IDS"])
+  },
+
+  AUTO_PUBLISH_PANELS: envBool("AUTO_PUBLISH_PANELS", true),
+
+  CALCULATOR_ITEMS: getCalculatorItems(),
+  CALCULATOR_DISCOUNTS: envList("CALCULATOR_DISCOUNTS", "0,5,10,15")
+    .map(Number)
+    .filter(value => Number.isFinite(value) && value >= 0 && value <= 100)
+    .slice(0, 25),
+
+  APPLICATION_TICKET_PREFIX: env("APPLICATION_TICKET_PREFIX", "postulacion"),
+  APPLICATION_CHANGE_NICKNAME: envBool("APPLICATION_CHANGE_NICKNAME", true),
+  APPLICATION_DELETE_TICKET_ON_DECISION: envBool("APPLICATION_DELETE_TICKET_ON_DECISION", false),
+  REMOVE_EMPLOYEE_ON_LEAVE: envBool("REMOVE_EMPLOYEE_ON_LEAVE", true),
+
+  MAX_BACKUPS: envNumber("MAX_BACKUPS", 40)
+};
