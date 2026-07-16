@@ -426,6 +426,8 @@ function logConfiguracionPaneles() {
   console.log(`- CALCULADORA_CHANNEL_ID: ${config.CHANNELS.CALCULADORA || "NO CONFIGURADO"}`);
   console.log(`- POSTULANTES_CHANNEL_ID: ${config.CHANNELS.POSTULANTES || "NO CONFIGURADO"}`);
   console.log(`- LOG_CHANNEL_ID: ${config.CHANNELS.LOGS || "NO CONFIGURADO"}`);
+  console.log(`- WEB_ORDERS_CHANNEL_ID: ${config.CHANNELS.WEB_ORDERS || "NO CONFIGURADO"}`);
+  console.log(`- VEHICLE_WEEKLY_CHANNEL_ID: ${config.CHANNELS.VEHICLE_WEEKLY || "NO CONFIGURADO"}`);
 }
 
 async function comprobarPermisosCanal(channel, key) {
