@@ -437,7 +437,6 @@ function logConfiguracionPaneles() {
   console.log(`- POSTULANTES_CHANNEL_ID: ${config.CHANNELS.POSTULANTES || "NO CONFIGURADO"}`);
   console.log(`- LOG_CHANNEL_ID: ${config.CHANNELS.LOGS || "NO CONFIGURADO"}`);
   console.log(`- WEB_ORDERS_CHANNEL_ID: ${config.CHANNELS.WEB_ORDERS || "NO CONFIGURADO"}`);
-  console.log(`- VEHICLE_WEEKLY_CHANNEL_ID: ${config.CHANNELS.VEHICLE_WEEKLY || "NO CONFIGURADO"}`);
 }
 
 async function comprobarPermisosCanal(channel, key) {
@@ -2350,6 +2349,16 @@ function iniciarSincronizacionPeriodicaEmpleados() {
 client.once(Events.ClientReady, async () => {
   logDatos();
   logConfiguracionPaneles();
+
+  if (config.BOT_USERNAME && client.user?.username !== config.BOT_USERNAME) {
+    try {
+      await client.user.setUsername(config.BOT_USERNAME);
+      console.log(`Nombre del bot actualizado a ${config.BOT_USERNAME}.`);
+    } catch (error) {
+      console.warn(`No se pudo cambiar automáticamente el nombre del bot a ${config.BOT_USERNAME}:`, error.message);
+    }
+  }
+
   console.log(`Bot conectado como ${client.user.tag}`);
   await registrarComandos();
   await sincronizarEmpleadosAlArrancar();

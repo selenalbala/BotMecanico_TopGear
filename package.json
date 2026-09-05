@@ -1,7 +1,7 @@
 {
   "name": "auto-exotic-bot-fichajes-railway",
-  "version": "2.1.0",
-  "description": "Bot de Auto Exotic para fichajes, pagos, postulaciones, vehículos y calculadora web en Railway.",
+  "version": "2.1.2",
+  "description": "Bot de Auto Exotic para fichajes, pagos, postulaciones y calculadora web en Railway.",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
