@@ -86,7 +86,23 @@ function crearStockInicial() {
 }
 
 function stockFilePath() {
+  return path.join(elegirDataDir(), "autoexotic-web-stock.json");
+}
+
+function legacyStockFilePath() {
   return path.join(elegirDataDir(), "topgear-web-stock.json");
+}
+
+function migrarStockMarcaSiHaceFalta() {
+  const nuevo = stockFilePath();
+  const anterior = legacyStockFilePath();
+  if (fs.existsSync(nuevo) || !fs.existsSync(anterior)) return;
+  try {
+    fs.copyFileSync(anterior, nuevo);
+    console.log("Stock anterior migrado a Auto Exotic.");
+  } catch (error) {
+    console.warn("No se pudo migrar el stock anterior:", error.message);
+  }
 }
 
 function normalizarStock(raw) {
@@ -127,6 +143,7 @@ function normalizarStock(raw) {
 }
 
 function cargarStock() {
+  migrarStockMarcaSiHaceFalta();
   return normalizarStock(leerJsonSeguro(stockFilePath(), crearStockInicial()));
 }
 
@@ -354,11 +371,27 @@ function validarItemId(itemId) {
 
 
 
-const VEHICLE_FILE_NAME = "topgear-web-vehicles.json";
+const VEHICLE_FILE_NAME = "autoexotic-web-vehicles.json";
 let vehicleWeeklyTimer = null;
 
 function vehicleFilePath() {
   return path.join(elegirDataDir(), VEHICLE_FILE_NAME);
+}
+
+function legacyVehicleFilePath() {
+  return path.join(elegirDataDir(), "topgear-web-vehicles.json");
+}
+
+function migrarVehiculosMarcaSiHaceFalta() {
+  const nuevo = vehicleFilePath();
+  const anterior = legacyVehicleFilePath();
+  if (fs.existsSync(nuevo) || !fs.existsSync(anterior)) return;
+  try {
+    fs.copyFileSync(anterior, nuevo);
+    console.log("Vehículos anteriores migrados a Auto Exotic.");
+  } catch (error) {
+    console.warn("No se pudo migrar la base de vehículos anterior:", error.message);
+  }
 }
 
 function crearDatosVehiculosIniciales() {
@@ -401,6 +434,7 @@ function normalizarDatosVehiculos(raw) {
 }
 
 function cargarDatosVehiculos() {
+  migrarVehiculosMarcaSiHaceFalta();
   return normalizarDatosVehiculos(leerJsonSeguro(vehicleFilePath(), crearDatosVehiculosIniciales()));
 }
 
@@ -553,7 +587,7 @@ async function enviarLogPedidoWeb(client, parsed) {
 
   return enviarCanalDiscord(client, channelId, {
     embeds: [{
-      color: 0x00A86B,
+      color: 0x2F7DFF,
       title: "🧾 Nuevo pedido desde la web",
       description,
       fields: [
@@ -561,7 +595,7 @@ async function enviarLogPedidoWeb(client, parsed) {
         { name: "Descuento", value: `${parsed.discount}%`, inline: true },
         { name: "Total", value: dineroDiscord(parsed.total), inline: true }
       ],
-      footer: { text: "Top Gear · Pedido web" },
+      footer: { text: "Auto Exotic · Pedido web" },
       timestamp: new Date().toISOString()
     }]
   });
@@ -589,7 +623,7 @@ async function reintentarLogsPedidosPendientes(client) {
 
 function embedsResumenVehiculos(summary) {
   const embeds = [{
-    color: 0x00A86B,
+    color: 0x2F7DFF,
     title: "🚗 Resumen semanal de vehículos",
     description: summary.count
       ? `Ventas realizadas del **${fechaCorta(summary.start)}** al **${fechaCorta(new Date(new Date(summary.endExclusive).getTime() - 1))}**.`
@@ -601,7 +635,7 @@ function embedsResumenVehiculos(summary) {
       { name: "10% de las ventas", value: dineroDiscord(summary.tenPercentSale), inline: true },
       { name: "10% del beneficio", value: dineroDiscord(summary.tenPercentProfit), inline: true }
     ],
-    footer: { text: "Top Gear · Cierre semanal automático" },
+    footer: { text: "Auto Exotic · Cierre semanal automático" },
     timestamp: new Date().toISOString()
   }];
 
@@ -612,7 +646,7 @@ function embedsResumenVehiculos(summary) {
     });
 
     embeds.push({
-      color: 0x0B0F0C,
+      color: 0x0A1633,
       title: `👤 ${seller.seller}`.slice(0, 256),
       description: vehicleLines.join("\n").slice(0, 3900) || "Sin detalle.",
       fields: [
@@ -710,11 +744,11 @@ function paginaVehiculosHtml() {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Top Gear | Vehículos</title>
+  <title>Auto Exotic | Vehículos</title>
   <style>
-    :root { --bg:#050807; --panel:#0f1813; --border:rgba(255,255,255,.11); --text:#f6fff9; --muted:#9fb1a8; --green:#00b875; --green2:#087d53; --red:#c01718; }
+    :root { --bg:#050815; --panel:#0d1730; --border:rgba(255,255,255,.11); --text:#f7f9ff; --muted:#aab6d3; --blue:#2f7dff; --blue2:#1858d9; --red:#c01718; }
     * { box-sizing:border-box; }
-    body { margin:0; min-height:100vh; padding:28px; color:var(--text); font-family:Inter,system-ui,Segoe UI,Arial,sans-serif; background:radial-gradient(circle at 12% 0%,rgba(0,184,116,.25),transparent 30%),linear-gradient(135deg,#07110c,#040706 60%,#07120d); }
+    body { margin:0; min-height:100vh; padding:28px; color:var(--text); font-family:Inter,system-ui,Segoe UI,Arial,sans-serif; background:radial-gradient(circle at 12% 0%,rgba(47,125,255,.25),transparent 30%),linear-gradient(135deg,#071126,#040714 60%,#07142c); }
     a { color:inherit; text-decoration:none; }
     button,input,select { font:inherit; }
     button { cursor:pointer; border:0; font-weight:850; }
@@ -724,7 +758,7 @@ function paginaVehiculosHtml() {
     .subtitle,.hint { color:var(--muted); }
     .links { display:flex; gap:10px; flex-wrap:wrap; }
     .link,.secondary { padding:12px 15px; border-radius:13px; background:rgba(255,255,255,.06); border:1px solid var(--border); color:var(--text); }
-    .card { background:linear-gradient(180deg,rgba(15,24,19,.94),rgba(8,13,10,.9)); border:1px solid var(--border); border-radius:22px; margin-bottom:18px; overflow:hidden; box-shadow:0 24px 70px rgba(0,0,0,.38); }
+    .card { background:linear-gradient(180deg,rgba(13,23,48,.94),rgba(7,13,28,.9)); border:1px solid var(--border); border-radius:22px; margin-bottom:18px; overflow:hidden; box-shadow:0 24px 70px rgba(0,0,0,.38); }
     .head { padding:20px 22px; border-bottom:1px solid var(--border); }
     .body { padding:20px 22px; }
     .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
@@ -732,15 +766,15 @@ function paginaVehiculosHtml() {
     .field.full { grid-column:1/-1; }
     label { color:var(--muted); font-size:13px; font-weight:800; }
     input,select { width:100%; min-height:46px; border-radius:13px; border:1px solid var(--border); background:rgba(255,255,255,.055); color:var(--text); padding:0 13px; outline:none; }
-    select option { color:#08100b; }
-    .primary { min-height:48px; padding:0 18px; border-radius:14px; color:white; background:linear-gradient(135deg,var(--green),var(--green2)); }
+    select option { color:#081226; }
+    .primary { min-height:48px; padding:0 18px; border-radius:14px; color:white; background:linear-gradient(135deg,var(--blue),var(--blue2)); }
     .danger { min-height:44px; padding:0 15px; border-radius:13px; color:#ffd9d9; background:rgba(192,23,24,.14); border:1px solid rgba(192,23,24,.35); }
     .login { max-width:520px; margin:50px auto; }
     .dashboard { display:none; }
     .dashboard.open { display:block; }
     .columns { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
     .message { display:none; margin-top:13px; padding:12px 13px; border-radius:13px; }
-    .message.ok { display:block; color:#d6ffed; background:rgba(0,184,116,.13); border:1px solid rgba(0,184,116,.3); }
+    .message.ok { display:block; color:#dbe8ff; background:rgba(47,125,255,.13); border:1px solid rgba(47,125,255,.3); }
     .message.error { display:block; color:#ffd6d6; background:rgba(192,23,24,.13); border:1px solid rgba(192,23,24,.3); }
     .stats { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
     .stat { padding:16px; border-radius:17px; border:1px solid var(--border); background:rgba(255,255,255,.045); }
@@ -801,7 +835,7 @@ function paginaVehiculosHtml() {
     </section>
   </main>
 <script>
-  let PIN = localStorage.getItem("topgear_vehicle_pin") || "";
+  let PIN = localStorage.getItem("autoexotic_vehicle_pin") || "";
   let DATA = null;
   const REQUIRES_PIN = ${JSON.stringify(requierePin())};
   const money = function(value) { return new Intl.NumberFormat("es-ES").format(Math.round(Number(value) || 0)) + ${JSON.stringify(config.CURRENCY_SUFFIX || "$")}; };
@@ -864,7 +898,7 @@ function paginaVehiculosHtml() {
 
   document.getElementById("loginBtn").onclick = async function() {
     PIN = document.getElementById("pin").value.trim();
-    try { await request("/api/admin/login", { method:"POST", body:JSON.stringify({ pin:PIN }) }); localStorage.setItem("topgear_vehicle_pin", PIN); await load(); }
+    try { await request("/api/admin/login", { method:"POST", body:JSON.stringify({ pin:PIN }) }); localStorage.setItem("autoexotic_vehicle_pin", PIN); await load(); }
     catch(error) { message(document.getElementById("loginMessage"), "error", error.message); }
   };
 
@@ -888,7 +922,7 @@ function paginaVehiculosHtml() {
     load().catch(function(error){ message(document.getElementById("loginMessage"), "error", error.message); });
   } else if (PIN) {
     document.getElementById("pin").value = PIN;
-    load().catch(function(){ localStorage.removeItem("topgear_vehicle_pin"); });
+    load().catch(function(){ localStorage.removeItem("autoexotic_vehicle_pin"); });
   }
 </script>
 </body>
@@ -1153,18 +1187,18 @@ function iniciarWeb(client) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Top Gear | Control de stock</title>
+  <title>Auto Exotic | Control de stock</title>
   <style>
     :root {
-      --bg: #050807;
+      --bg: #050815;
       --panel: rgba(15, 24, 19, .88);
       --border: rgba(255,255,255,.10);
-      --border-strong: rgba(0,184,116,.40);
-      --text: #f6fff9;
-      --muted: #9fb1a8;
+      --border-strong: rgba(47,125,255,.40);
+      --text: #f7f9ff;
+      --muted: #aab6d3;
       --muted-2: #6f8178;
-      --green: #00b875;
-      --green-2: #087d53;
+      --blue: #2f7dff;
+      --blue-2: #1858d9;
       --red: #c01718;
       --red-soft: rgba(192,23,24,.14);
       --button: #223127;
@@ -1182,9 +1216,9 @@ function iniciarWeb(client) {
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
       color: var(--text);
       background:
-        radial-gradient(circle at 12% 0%, rgba(0,184,116,.28), transparent 30%),
-        radial-gradient(circle at 94% 10%, rgba(0,184,116,.13), transparent 36%),
-        linear-gradient(135deg, #07110c 0%, #040706 58%, #07120d 100%);
+        radial-gradient(circle at 12% 0%, rgba(47,125,255,.28), transparent 30%),
+        radial-gradient(circle at 94% 10%, rgba(47,125,255,.13), transparent 36%),
+        linear-gradient(135deg, #071126 0%, #040714 58%, #07142c 100%);
       padding: 32px;
     }
 
@@ -1250,7 +1284,7 @@ function iniciarWeb(client) {
 
     .eyebrow {
       margin: 0;
-      color: var(--green);
+      color: var(--blue);
       font-size: 13px;
       font-weight: 950;
       letter-spacing: .16em;
@@ -1347,13 +1381,13 @@ function iniciarWeb(client) {
 
     .input:focus,
     .select:focus {
-      border-color: rgba(0,184,116,.55);
+      border-color: rgba(47,125,255,.55);
     }
 
     .primary {
       min-height: 48px;
       border-radius: 16px;
-      background: linear-gradient(135deg, var(--green), var(--green-2));
+      background: linear-gradient(135deg, var(--blue), var(--blue-2));
       color: white;
     }
 
@@ -1480,9 +1514,9 @@ function iniciarWeb(client) {
     }
 
     .pill.ok {
-      color: #d6ffed;
-      border-color: rgba(0,184,116,.32);
-      background: rgba(0,184,116,.12);
+      color: #dbe8ff;
+      border-color: rgba(47,125,255,.32);
+      background: rgba(47,125,255,.12);
     }
 
     .pill.low {
@@ -1509,9 +1543,9 @@ function iniciarWeb(client) {
 
     .message.ok {
       display: block;
-      color: #d6ffed;
-      background: rgba(0,184,116,.13);
-      border: 1px solid rgba(0,184,116,.32);
+      color: #dbe8ff;
+      background: rgba(47,125,255,.13);
+      border: 1px solid rgba(47,125,255,.32);
     }
 
     .message.error {
@@ -1575,7 +1609,7 @@ function iniciarWeb(client) {
   <main class="page">
     <div class="topbar">
       <div class="brand">
-        <p class="eyebrow">Top Gear</p>
+        <p class="eyebrow">Auto Exotic</p>
         <h1>Control de stock</h1>
         <p class="subtitle">Registra los pedidos que haces, actualiza el stock y calcula el mínimo recomendado con un 30% de margen.</p>
       </div>
@@ -1683,7 +1717,7 @@ function iniciarWeb(client) {
   <script>
     const INITIAL = ${initial};
     let DATA = null;
-    let PIN = localStorage.getItem("topgear_stock_pin") || "";
+    let PIN = localStorage.getItem("autoexotic_stock_pin") || "";
 
     const loginCard = document.getElementById("loginCard");
     const dashboard = document.getElementById("dashboard");
@@ -1907,7 +1941,7 @@ function iniciarWeb(client) {
       const result = await response.json();
 
       if (!response.ok || !result.ok) {
-        localStorage.removeItem("topgear_stock_pin");
+        localStorage.removeItem("autoexotic_stock_pin");
         throw new Error(result.error || "No se pudo cargar el stock.");
       }
 
@@ -1938,7 +1972,7 @@ function iniciarWeb(client) {
           throw new Error(result.error || "PIN incorrecto.");
         }
 
-        localStorage.setItem("topgear_stock_pin", PIN);
+        localStorage.setItem("autoexotic_stock_pin", PIN);
         await loadAdminData();
       } catch (error) {
         setMessage(loginMessage, "error", error.message || "No se pudo iniciar sesión.");
@@ -2046,19 +2080,19 @@ function iniciarWeb(client) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Top Gear | Calculadora</title>
+  <title>Auto Exotic | Calculadora</title>
 
   <style>
     :root {
-      --bg: #050807;
+      --bg: #050815;
       --panel: rgba(15, 24, 19, .86);
       --border: rgba(255,255,255,.10);
-      --border-strong: rgba(0,184,116,.40);
-      --text: #f6fff9;
-      --muted: #9fb1a8;
+      --border-strong: rgba(47,125,255,.40);
+      --text: #f7f9ff;
+      --muted: #aab6d3;
       --muted-2: #6f8178;
-      --green: #00b875;
-      --green-2: #087d53;
+      --blue: #2f7dff;
+      --blue-2: #1858d9;
       --red: #c01718;
       --red-soft: rgba(192,23,24,.14);
       --button: #223127;
@@ -2074,9 +2108,9 @@ function iniciarWeb(client) {
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
       color: var(--text);
       background:
-        radial-gradient(circle at 12% 0%, rgba(0,184,116,.28), transparent 30%),
-        radial-gradient(circle at 94% 10%, rgba(0,184,116,.13), transparent 36%),
-        linear-gradient(135deg, #07110c 0%, #040706 58%, #07120d 100%);
+        radial-gradient(circle at 12% 0%, rgba(47,125,255,.28), transparent 30%),
+        radial-gradient(circle at 94% 10%, rgba(47,125,255,.13), transparent 36%),
+        linear-gradient(135deg, #071126 0%, #040714 58%, #07142c 100%);
       padding: 32px;
     }
 
@@ -2126,7 +2160,7 @@ function iniciarWeb(client) {
 
     .eyebrow {
       margin: 0 0 10px;
-      color: var(--green);
+      color: var(--blue);
       font-size: 13px;
       font-weight: 950;
       letter-spacing: .16em;
@@ -2248,7 +2282,7 @@ function iniciarWeb(client) {
 
     .service.selected {
       border-color: var(--border-strong);
-      background: linear-gradient(180deg, rgba(0,184,116,.12), rgba(255,255,255,.035));
+      background: linear-gradient(180deg, rgba(47,125,255,.12), rgba(255,255,255,.035));
     }
 
     .service-top {
@@ -2278,10 +2312,10 @@ function iniciarWeb(client) {
       height: 42px;
       display: grid;
       place-items: center;
-      border: 1px solid rgba(0,184,116,.24);
+      border: 1px solid rgba(47,125,255,.24);
       border-radius: 14px;
-      background: rgba(0,184,116,.09);
-      color: var(--green);
+      background: rgba(47,125,255,.09);
+      color: var(--blue);
       font-weight: 950;
       font-size: 16px;
     }
@@ -2299,7 +2333,7 @@ function iniciarWeb(client) {
     }
 
     .btn-add {
-      background: linear-gradient(135deg, var(--green), var(--green-2));
+      background: linear-gradient(135deg, var(--blue), var(--blue-2));
     }
 
     .btn-remove {
@@ -2355,7 +2389,7 @@ function iniciarWeb(client) {
     }
 
     .discounts button.active {
-      background: linear-gradient(135deg, var(--green), var(--green-2));
+      background: linear-gradient(135deg, var(--blue), var(--blue-2));
       border-color: rgba(255,255,255,.14);
     }
 
@@ -2408,8 +2442,8 @@ function iniciarWeb(client) {
       margin-top: 22px;
       padding: 20px;
       border-radius: 22px;
-      background: linear-gradient(135deg, var(--green), #078354);
-      box-shadow: 0 18px 50px rgba(0,184,116,.18);
+      background: linear-gradient(135deg, var(--blue), #164fbf);
+      box-shadow: 0 18px 50px rgba(47,125,255,.18);
       display: flex;
       justify-content: space-between;
       align-items: end;
@@ -2440,7 +2474,7 @@ function iniciarWeb(client) {
       width: 100%;
       min-height: 50px;
       border-radius: 16px;
-      background: linear-gradient(135deg, var(--green), var(--green-2));
+      background: linear-gradient(135deg, var(--blue), var(--blue-2));
       color: white;
     }
 
@@ -2470,9 +2504,9 @@ function iniciarWeb(client) {
 
     .message.ok {
       display: block;
-      color: #d6ffed;
-      background: rgba(0,184,116,.13);
-      border: 1px solid rgba(0,184,116,.32);
+      color: #dbe8ff;
+      background: rgba(47,125,255,.13);
+      border: 1px solid rgba(47,125,255,.32);
     }
 
     .message.error {
@@ -2514,7 +2548,7 @@ function iniciarWeb(client) {
   <main class="page">
     <section class="hero">
       <div>
-        <p class="eyebrow">Top Gear</p>
+        <p class="eyebrow">Auto Exotic</p>
         <h1>Calculadora de servicios</h1>
         <p class="subtitle">Selecciona servicios, aplica descuentos y pulsa Enviar para descontar el stock.</p>
         <div class="hero-actions">
@@ -2575,7 +2609,7 @@ function iniciarWeb(client) {
       </aside>
     </section>
 
-    <div class="footer">Top Gear · Calculadora y stock</div>
+    <div class="footer">Auto Exotic · Calculadora y stock</div>
   </main>
 
   <script>

@@ -115,10 +115,7 @@ module.exports = {
     GOODBYE: envId(["GOODBYE_CHANNEL_ID", "DESPEDIDA_CHANNEL_ID", "LEAVE_CHANNEL_ID"]),
     LOGS: envId(["LOG_CHANNEL_ID", "LOGS_CHANNEL_ID", "AUDIT_CHANNEL_ID"]),
 
-    // Cada pedido enviado desde la calculadora web se registra aquí.
     WEB_ORDERS: envId(["WEB_ORDERS_CHANNEL_ID", "ORDERS_LOG_CHANNEL_ID", "PEDIDOS_WEB_CHANNEL_ID"], "1520969599343136830"),
-
-    // Resumen semanal de vehículos, cada lunes a las 00:00.
     VEHICLE_WEEKLY: envId(["VEHICLE_WEEKLY_CHANNEL_ID", "VEHICULOS_RESUMEN_CHANNEL_ID", "VEHICLE_REPORT_CHANNEL_ID"], "1527364846541078718")
   },
 
@@ -147,5 +144,7 @@ module.exports = {
   APPLICATION_DELETE_TICKET_ON_DECISION: envBool("APPLICATION_DELETE_TICKET_ON_DECISION", false),
   REMOVE_EMPLOYEE_ON_LEAVE: envBool("REMOVE_EMPLOYEE_ON_LEAVE", true),
 
+  // Sincronización preventiva por si el bot estaba apagado cuando alguien salió o perdió el rol.
+  EMPLOYEE_SYNC_MINUTES: Math.max(1, envNumber("EMPLOYEE_SYNC_MINUTES", 15)),
   MAX_BACKUPS: envNumber("MAX_BACKUPS", 40)
 };

@@ -30,16 +30,15 @@ const EMPLOYEE_CACHE_MS = 10 * 60 * 1000;
 
 process.env.TZ = config.TIMEZONE || process.env.TZ || "Europe/Madrid";
 
-const DATA_FILE_NAME = "topgear-data.json";
-const PREFIX = "tg";
+const DATA_FILE_NAME = "autoexotic-data.json";
+const PREFIX = "ae";
 const MINUTE = 60 * 1000;
 const MAX_DESCRIPTION = 3800;
 
-// Tema visual Top Gear: verde/negro.
-// Discord no permite botones negros personalizados, así que usamos:
-// Success = verde, Primary = azul, Danger = rojo, Secondary = gris oscuro.
-const COLOR_TOPGEAR_GREEN = 0x00A86B;
-const COLOR_TOPGEAR_DARK = 0x0B0F0C;
+// Tema visual Auto Exotic: azul profundo / azul eléctrico.
+// Discord no permite colores personalizados en botones: Primary = azul, Danger = rojo, Secondary = gris.
+const COLOR_AUTOEXOTIC_BLUE = 0x2F7DFF;
+const COLOR_AUTOEXOTIC_DARK = 0x0A1633;
 const COLOR_WARNING_RED = 0xC01718;
 
 
@@ -62,6 +61,17 @@ const DATA_DIR = elegirDataDir();
 const DATA_FILE = config.DATA_FILE ? path.resolve(config.DATA_FILE) : path.join(DATA_DIR, DATA_FILE_NAME);
 const BACKUP_DIR = path.join(path.dirname(DATA_FILE), "backups");
 const LEGACY_FICHAJES_FILE = path.join(path.dirname(DATA_FILE), "fichajes.json");
+const LEGACY_TOPGEAR_DATA_FILE = path.join(path.dirname(DATA_FILE), "topgear-data.json");
+
+// Cambio de marca sin perder la base de datos que ya existía.
+if (!config.DATA_FILE && !fs.existsSync(DATA_FILE) && fs.existsSync(LEGACY_TOPGEAR_DATA_FILE)) {
+  try {
+    fs.copyFileSync(LEGACY_TOPGEAR_DATA_FILE, DATA_FILE);
+    console.log(`Base de datos anterior migrada a ${DATA_FILE_NAME}.`);
+  } catch (error) {
+    console.warn("No se pudo migrar la base de datos anterior:", error.message);
+  }
+}
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMembers],
@@ -78,7 +88,7 @@ function generarId(prefix = "id") {
 
 function crearDatosIniciales() {
   return {
-    version: 2,
+    version: 3,
     panelMessages: {},
     openShifts: {},
     entries: [],
@@ -94,7 +104,7 @@ function normalizarDatos(data) {
   const inicial = crearDatosIniciales();
   if (!data || typeof data !== "object" || Array.isArray(data)) return inicial;
 
-  data.version = 2;
+  data.version = 3;
   data.panelMessages = data.panelMessages && typeof data.panelMessages === "object" ? data.panelMessages : {};
   data.openShifts = data.openShifts && typeof data.openShifts === "object" ? data.openShifts : {};
   data.entries = Array.isArray(data.entries) ? data.entries : [];
@@ -375,7 +385,7 @@ function limpiarBackupsAntiguos() {
   try {
     if (!fs.existsSync(BACKUP_DIR)) return;
     const backups = fs.readdirSync(BACKUP_DIR)
-      .filter(name => name.startsWith("topgear-") && name.endsWith(".json"))
+      .filter(name => /^(autoexotic|topgear)-/.test(name) && name.endsWith(".json"))
       .map(name => {
         const filePath = path.join(BACKUP_DIR, name);
         return { name, filePath, time: fs.statSync(filePath).mtimeMs };
@@ -395,7 +405,7 @@ function crearBackupSiExiste() {
     if (!fs.existsSync(DATA_FILE)) return;
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const sello = new Date().toISOString().replace(/[:.]/g, "-");
-    fs.copyFileSync(DATA_FILE, path.join(BACKUP_DIR, `topgear-${sello}.json`));
+    fs.copyFileSync(DATA_FILE, path.join(BACKUP_DIR, `autoexotic-${sello}.json`));
     limpiarBackupsAntiguos();
   } catch (error) {
     console.warn("No se pudo crear backup:", error.message);
@@ -574,75 +584,154 @@ async function obtenerMiembroSeguro(guild, userId) {
   return guild.members.cache.get(userId) || await guild.members.fetch(userId).catch(() => null);
 }
 
+function cerrarFichajeAbierto(data, userId, opciones = {}) {
+  const abierta = data.openShifts?.[userId];
+  if (!abierta?.start) return null;
+
+  const inicio = new Date(abierta.start);
+  let fin = opciones.endAt instanceof Date ? opciones.endAt : new Date(opciones.endAt || Date.now());
+  if (Number.isNaN(inicio.getTime())) {
+    delete data.openShifts[userId];
+    return null;
+  }
+  if (Number.isNaN(fin.getTime())) fin = new Date();
+  if (fin < inicio) fin = new Date(inicio.getTime());
+
+  const displayName = opciones.displayName || abierta.displayName || data.employees?.[userId]?.displayName || `Usuario ${userId}`;
+  const entry = {
+    id: generarId("shift"),
+    type: "shift",
+    userId,
+    displayName,
+    start: inicio.toISOString(),
+    end: fin.toISOString(),
+    createdAt: new Date().toISOString(),
+    closedAutomatically: Boolean(opciones.automatic),
+    closeReason: String(opciones.reason || "Cierre de fichaje").slice(0, 120)
+  };
+
+  if (opciones.closedBy) entry.closedBy = opciones.closedBy;
+  if (opciones.closedByName) entry.closedByName = opciones.closedByName;
+
+  data.entries.push(entry);
+  delete data.openShifts[userId];
+  return {
+    entry,
+    inicio,
+    fin,
+    minutos: Math.max(0, Math.round((fin.getTime() - inicio.getTime()) / MINUTE))
+  };
+}
+
+function retirarEmpleadoActivo(data, userId, opciones = {}) {
+  const displayName = opciones.displayName || data.employees?.[userId]?.displayName || `Usuario ${userId}`;
+  const cierre = cerrarFichajeAbierto(data, userId, {
+    endAt: opciones.endAt || new Date(),
+    displayName,
+    reason: opciones.reason || "Empleado retirado del censo activo",
+    automatic: opciones.automatic !== false,
+    closedBy: opciones.closedBy,
+    closedByName: opciones.closedByName
+  });
+
+  delete data.employees[userId];
+  // No mantenemos un segundo censo de exempleados: evita que vuelvan a aparecer por datos antiguos.
+  if (data.formerMembers) delete data.formerMembers[userId];
+  return cierre;
+}
+
+async function sincronizarCensoEmpleadosGuild(guild, data = cargarDatos()) {
+  const roleIds = rolesEmpleadosConfigurados();
+  if (!guild || !roleIds.length) return { ok: false, activos: [], retirados: 0, cerrados: 0 };
+
+  try {
+    // Esta carga completa es deliberada: solo limpiamos la BBDD cuando Discord ha confirmado la lista completa.
+    await guild.members.fetch();
+  } catch (error) {
+    console.warn("No se sincroniza el censo de empleados porque no se pudo cargar la lista completa del servidor:", error.message);
+    return { ok: false, activos: [], retirados: 0, cerrados: 0 };
+  }
+
+  const activos = [];
+  const activeIds = new Set();
+  for (const member of guild.members.cache.values()) {
+    if (member.user?.bot || !memberTieneRolEmpleado(member)) continue;
+    const memberRoleIds = roleIds.filter(roleId => member.roles.cache.has(roleId));
+    const roleNames = memberRoleIds
+      .map(roleId => member.guild.roles.cache.get(roleId)?.name || "Rol")
+      .filter(Boolean);
+    const displayName = nombreDesdeMember(member);
+    const avatarURL = avatarUsuario(member);
+    touchEmpleado(data, member.id, displayName, { avatarURL, roleIds: memberRoleIds, roleNames });
+    activeIds.add(member.id);
+    activos.push({ userId: member.id, displayName, avatarURL, roleNames });
+  }
+
+  let retirados = 0;
+  let cerrados = 0;
+  const candidatos = new Set([
+    ...Object.keys(data.employees || {}),
+    ...Object.keys(data.openShifts || {})
+  ]);
+
+  for (const userId of candidatos) {
+    if (activeIds.has(userId)) continue;
+    const displayName = data.employees?.[userId]?.displayName || data.openShifts?.[userId]?.displayName || `Usuario ${userId}`;
+    const cierre = retirarEmpleadoActivo(data, userId, {
+      displayName,
+      reason: "Ya no está en el servidor o ya no tiene un rol de empleado",
+      automatic: true
+    });
+    if (cierre) cerrados += 1;
+    retirados += 1;
+  }
+
+  guardarDatos(data);
+  const lista = activos.sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
+  employeeGuildCache.set(guild.id, { createdAt: Date.now(), empleados: lista });
+  return { ok: true, activos: lista, retirados, cerrados };
+}
+
 async function obtenerEmpleadosGuild(interactionOrGuild, data = cargarDatos(), opciones = {}) {
   const guild = interactionOrGuild?.guild || interactionOrGuild;
   const roleIds = rolesEmpleadosConfigurados();
-  const empleados = new Map();
   const cacheKey = guild?.id || "sin-guild";
-  const now = Date.now();
   const cached = employeeGuildCache.get(cacheKey);
+  const now = Date.now();
 
-  if (!opciones.force && cached?.empleados?.length && now - cached.createdAt < EMPLOYEE_CACHE_MS) {
-    for (const emp of cached.empleados) empleados.set(emp.userId, emp);
+  if (!guild) return [];
+
+  if (!roleIds.length) {
+    // Sin roles configurados no podemos distinguir de forma segura quién es empleado.
+    return Object.values(data.employees || {})
+      .map(emp => ({
+        userId: emp.userId,
+        displayName: emp.displayName || "Usuario desconocido",
+        avatarURL: emp.avatarURL || null,
+        roleNames: emp.roleNames || []
+      }))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
   }
 
-  if (!empleados.size && guild && roleIds.length) {
-    try {
-      // Necesita Server Members Intent activado en el Developer Portal.
-      // No lo hacemos en cada click: Discord puede limitar opcode 8 si se abusa.
-      await guild.members.fetch();
-      for (const member of guild.members.cache.values()) {
-        if (member.user?.bot) continue;
-        if (!memberTieneRolEmpleado(member)) continue;
-        const memberRoleIds = roleIds.filter(roleId => member.roles.cache.has(roleId));
-        const roleNames = memberRoleIds
-          .map(roleId => member.guild.roles.cache.get(roleId)?.name || "Rol")
-          .filter(Boolean);
-        const displayName = nombreDesdeMember(member);
-        const avatarURL = avatarUsuario(member);
-        touchEmpleado(data, member.id, displayName, { avatarURL, roleIds: memberRoleIds, roleNames });
-        empleados.set(member.id, { userId: member.id, displayName, avatarURL, roleNames });
-      }
-      const listaCache = [...empleados.values()].sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
-      employeeGuildCache.set(cacheKey, { createdAt: now, empleados: listaCache });
-      guardarDatos(data);
-    } catch (error) {
-      const aviso = String(error?.message || error);
-      console.warn("No se pudo cargar la lista completa de empleados por roles. Se usará caché/datos guardados:", aviso);
-
-      if (cached?.empleados?.length) {
-        for (const emp of cached.empleados) empleados.set(emp.userId, emp);
-      } else {
-        // Fallback adicional: si algunos miembros están cacheados, úsalo sin pedir otro fetch masivo.
-        for (const member of guild.members.cache.values()) {
-          if (member.user?.bot) continue;
-          if (!memberTieneRolEmpleado(member)) continue;
-          const memberRoleIds = roleIds.filter(roleId => member.roles.cache.has(roleId));
-          const roleNames = memberRoleIds
-            .map(roleId => member.guild.roles.cache.get(roleId)?.name || "Rol")
-            .filter(Boolean);
-          const displayName = nombreDesdeMember(member);
-          const avatarURL = avatarUsuario(member);
-          touchEmpleado(data, member.id, displayName, { avatarURL, roleIds: memberRoleIds, roleNames });
-          empleados.set(member.id, { userId: member.id, displayName, avatarURL, roleNames });
-        }
-      }
-    }
+  if (!opciones.force && cached && now - cached.createdAt < EMPLOYEE_CACHE_MS) {
+    return cached.empleados.slice();
   }
 
-  // Fallback: datos ya guardados por fichajes/postulaciones.
-  for (const userId of obtenerIdsEmpleados(data)) {
-    if (empleados.has(userId)) continue;
-    const emp = data.employees?.[userId] || {};
-    empleados.set(userId, {
-      userId,
-      displayName: emp.displayName || "Usuario desconocido",
-      avatarURL: emp.avatarURL || null,
-      roleNames: emp.roleNames || []
-    });
-  }
+  const sync = await sincronizarCensoEmpleadosGuild(guild, data);
+  if (sync.ok) return sync.activos;
 
-  return [...empleados.values()].sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
+  // Si Discord falla temporalmente, solo reutilizamos una lista que ya fue validada anteriormente.
+  if (cached?.empleados?.length) return cached.empleados.slice();
+
+  // Último fallback seguro: miembros que Discord ya tiene cacheados y que conservan el rol.
+  const empleados = [];
+  for (const member of guild.members.cache.values()) {
+    if (member.user?.bot || !memberTieneRolEmpleado(member)) continue;
+    const memberRoleIds = roleIds.filter(roleId => member.roles.cache.has(roleId));
+    const roleNames = memberRoleIds.map(roleId => member.guild.roles.cache.get(roleId)?.name || "Rol").filter(Boolean);
+    empleados.push({ userId: member.id, displayName: nombreDesdeMember(member), avatarURL: avatarUsuario(member), roleNames });
+  }
+  return empleados.sort((a, b) => a.displayName.localeCompare(b.displayName, "es"));
 }
 
 function pad2(value) {
@@ -700,6 +789,22 @@ function rangoSemanaPasada() {
   const thisStart = startOfWeek(new Date());
   const start = addDays(thisStart, -7);
   return { start, endExclusive: thisStart, label: "semana pasada" };
+}
+
+function rangoHoy() {
+  const start = startOfDay(new Date());
+  return { start, endExclusive: addDays(start, 1), label: "hoy" };
+}
+
+function parseDateTimeLocal(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text || text === "ahora" || text === "now") return new Date();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ t](\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), 0, 0);
+  if (Number.isNaN(date.getTime())) return null;
+  if (date.getFullYear() !== Number(match[1]) || date.getMonth() !== Number(match[2]) - 1 || date.getDate() !== Number(match[3])) return null;
+  return date;
 }
 
 function rangoDesdeHasta(desdeTexto, hastaTexto) {
@@ -777,14 +882,14 @@ async function resolverEmpleado(interaction, texto, data = cargarDatos()) {
 
   const id = extraerUserId(entrada);
   if (id) {
-    let displayName = data.employees[id]?.displayName || "Usuario desconocido";
-    try {
-      const member = await interaction.guild?.members.fetch(id);
-      if (member?.displayName) displayName = member.displayName;
-    } catch {
-      // No pasa nada: puede no estar cacheado o no estar en el servidor.
+    const member = await obtenerMiembroSeguro(interaction.guild, id);
+    if (rolesEmpleadosConfigurados().length && (!member || !memberTieneRolEmpleado(member))) {
+      return { error: "Ese usuario no es un empleado activo: no está en el servidor o ya no tiene un rol de empleado." };
     }
-    touchEmpleado(data, id, displayName);
+    const displayName = member ? nombreDesdeMember(member) : (data.employees[id]?.displayName || "Usuario desconocido");
+    const memberRoleIds = member ? rolesEmpleadosConfigurados().filter(roleId => member.roles.cache.has(roleId)) : [];
+    const roleNames = memberRoleIds.map(roleId => member.guild.roles.cache.get(roleId)?.name || "Rol").filter(Boolean);
+    touchEmpleado(data, id, displayName, { avatarURL: avatarUsuario(member), roleIds: memberRoleIds, roleNames });
     return { userId: id, displayName };
   }
 
@@ -881,7 +986,7 @@ function embedEmpleado(data, userId, range, title = "Consulta de empleado") {
     : "No hay fichajes en este periodo.";
 
   const embed = new EmbedBuilder()
-    .setColor(COLOR_TOPGEAR_GREEN)
+    .setColor(COLOR_AUTOEXOTIC_BLUE)
     .setTitle(title)
     .setDescription(`**Empleado:** ${displayName}\n**Periodo:** ${etiquetaRango(range)}\n**Total:** ${minutosAHoras(total.minutos)}${total.abiertos ? "\nTiene un fichaje abierto." : ""}`)
     .addFields(
@@ -916,7 +1021,7 @@ function embedTodos(data, range, title = "Consulta de empleados") {
   const totalGeneral = resultados.reduce((acc, item) => acc + item.minutos, 0);
 
   return new EmbedBuilder()
-    .setColor(COLOR_TOPGEAR_GREEN)
+    .setColor(COLOR_AUTOEXOTIC_BLUE)
     .setTitle(title)
     .setDescription(limitarTexto(descripcion))
     .addFields(
@@ -949,7 +1054,7 @@ function embedTodosDesdeLista(data, empleados, range, title = "Consulta de emple
   const totalGeneral = resultados.reduce((acc, item) => acc + item.minutos, 0);
 
   return new EmbedBuilder()
-    .setColor(COLOR_TOPGEAR_GREEN)
+    .setColor(COLOR_AUTOEXOTIC_BLUE)
     .setTitle(title)
     .setDescription(limitarTexto(descripcion))
     .addFields(
@@ -996,17 +1101,17 @@ async function sinPermiso(interaction) {
 
 function crearEmbedFichajes() {
   return new EmbedBuilder()
-    .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("🕒 Fichajes Top Gear")
+    .setColor(COLOR_AUTOEXOTIC_BLUE)
+    .setTitle("🕒 Fichajes Auto Exotic")
     .setDescription("Ficha tu entrada y salida. También puedes consultar tus horas por semana.")
-    .setFooter({ text: "Top Gear · Control de horas" })
+    .setFooter({ text: "Auto Exotic · Control de horas" })
     .setTimestamp();
 }
 
 function crearBotonesFichajes() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:entrada`).setLabel("Entrada").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:entrada`).setLabel("Entrada").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:ficha:salida`).setLabel("Salida").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras`).setLabel("⏱️ Mis horas").setStyle(ButtonStyle.Primary)
     )
@@ -1016,7 +1121,7 @@ function crearBotonesFichajes() {
 function crearOpcionesMisHoras() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:esta`).setLabel("Esta semana").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:esta`).setLabel("Esta semana").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:pasada`).setLabel("Semana pasada").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:ficha:mishoras:rango`).setLabel("Elegir fechas").setStyle(ButtonStyle.Secondary)
     )
@@ -1025,16 +1130,16 @@ function crearOpcionesMisHoras() {
 
 function crearEmbedPagos() {
   return new EmbedBuilder()
-    .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("Top Gear | Pagos")
-    .setDescription("Panel para consultar horas de empleados y modificar horas fichadas cuando haga falta.\n\nOpciones incluidas: todos los empleados, empleado concreto, esta semana, semana pasada y rango personalizado.")
+    .setColor(COLOR_AUTOEXOTIC_BLUE)
+    .setTitle("Auto Exotic | Pagos")
+    .setDescription("Panel para consultar y gestionar las horas del equipo.\n\nAl elegir un empleado puedes ajustar **hoy**, **esta semana** o un **rango personalizado**, y también cerrar un fichaje que se haya quedado abierto.")
     .setTimestamp();
 }
 
 function crearBotonesPagos() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("Consultar empleado").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:consultar`).setLabel("Consultar empleado").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:modificar`).setLabel("🛠️ Modificar horas").setStyle(ButtonStyle.Danger)
     )
   ];
@@ -1067,7 +1172,7 @@ function crearSelectoresEmpleadosDesdeLista(empleados, modo, placeholderBase) {
           .addOptions(chunk.map(emp => ({
             label: emp.displayName.slice(0, 100),
             value: emp.userId,
-            description: (emp.roleNames?.length ? emp.roleNames.join(", ") : "Empleado Top Gear").slice(0, 100)
+            description: (emp.roleNames?.length ? emp.roleNames.join(", ") : "Empleado Auto Exotic").slice(0, 100)
           })))
       )
     );
@@ -1083,7 +1188,7 @@ async function crearOpcionesConsultaPagos(interaction, data) {
   const empleados = await obtenerEmpleadosGuild(interaction, data);
   const rows = [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:esta`).setLabel("Todos · esta semana").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:esta`).setLabel("Todos · esta semana").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:pasada`).setLabel("Todos · semana pasada").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:todos:rango`).setLabel("Todos · rango").setStyle(ButtonStyle.Secondary)
     )
@@ -1104,7 +1209,7 @@ async function crearSelectorModificarHoras(interaction, data) {
 function crearOpcionesRangoEmpleado(userId) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:esta`).setLabel("Esta semana").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:esta`).setLabel("Esta semana").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:pasada`).setLabel("Semana pasada").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${PREFIX}:pagos:emp:${userId}:rango`).setLabel("Elegir fechas").setStyle(ButtonStyle.Secondary)
     )
@@ -1113,8 +1218,8 @@ function crearOpcionesRangoEmpleado(userId) {
 
 function crearEmbedCalculadora() {
   return new EmbedBuilder()
-    .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("Top Gear | Calculadora")
+    .setColor(COLOR_AUTOEXOTIC_BLUE)
+    .setTitle("Auto Exotic | Calculadora")
     .setDescription("Abre la calculadora para calcular mejoras, reparaciones y descuentos.")
     .setTimestamp();
 }
@@ -1137,7 +1242,7 @@ function crearBotonesCalculadora() {
     new ButtonBuilder()
       .setCustomId(`${PREFIX}:calc:abrir`)
       .setLabel("🧮 Calculadora Discord")
-      .setStyle(ButtonStyle.Success)
+      .setStyle(ButtonStyle.Primary)
   );
 
   return [
@@ -1147,17 +1252,17 @@ function crearBotonesCalculadora() {
 
 function crearEmbedPostulantes() {
   return new EmbedBuilder()
-    .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("🏁 Postulaciones Top Gear")
+    .setColor(COLOR_AUTOEXOTIC_BLUE)
+    .setTitle("🏁 Postulaciones Auto Exotic")
     .setDescription(`¿Quieres unirte al taller?\n\nPulsa el botón de abajo y completa tu solicitud.\n\n🔧 La postulación será revisada por el equipo encargado.`)
-    .setFooter({ text: "Top Gear · Sistema de postulaciones" })
+    .setFooter({ text: "Auto Exotic · Sistema de postulaciones" })
     .setTimestamp();
 }
 
 function crearBotonesPostulantes() {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("Crear postulación").setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId(`${PREFIX}:postular:abrir`).setLabel("Crear postulación").setStyle(ButtonStyle.Primary)
     )
   ];
 }
@@ -1327,6 +1432,90 @@ function crearModalEmpleado(tipoRango) {
   return modal;
 }
 
+function crearPanelGestionHorasEmpleado(data, userId) {
+  const empleado = data.employees?.[userId] || {};
+  const displayName = empleado.displayName || `Usuario ${userId}`;
+  const semanal = calcularMinutosEmpleado(data, userId, rangoEstaSemana());
+  const abierta = data.openShifts?.[userId];
+  let estadoFichaje = "✅ Sin fichaje abierto";
+  if (abierta?.start) {
+    const inicio = new Date(abierta.start);
+    const transcurrido = Math.max(0, Math.round((Date.now() - inicio.getTime()) / MINUTE));
+    estadoFichaje = `🟠 Abierto desde **${formatDateTime(inicio)}** · ${minutosAHoras(transcurrido)}`;
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(COLOR_AUTOEXOTIC_BLUE)
+    .setTitle(`Gestión de horas · ${displayName}`.slice(0, 256))
+    .setDescription(`**Esta semana:** ${minutosAHoras(semanal.minutos)}\n**Fichaje:** ${estadoFichaje}\n\nEl ajuste deja el total exacto que indiques para el periodo elegido.`)
+    .setTimestamp();
+  if (empleado.avatarURL) embed.setThumbnail(empleado.avatarURL);
+
+  const components = [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:gestion:${userId}:hoy`).setLabel("Ajustar hoy").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:gestion:${userId}:esta`).setLabel("Ajustar esta semana").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:gestion:${userId}:rango`).setLabel("Ajustar rango").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`${PREFIX}:pagos:gestion:${userId}:cerrar`).setLabel("Cerrar fichaje").setStyle(ButtonStyle.Danger).setDisabled(!abierta)
+    )
+  ];
+  return { embeds: [embed], components };
+}
+
+function crearModalAjusteGestion(userId, tipo) {
+  const modal = new ModalBuilder()
+    .setCustomId(`${PREFIX}:modal:ajustar:${tipo}:${userId}`)
+    .setTitle(tipo === "hoy" ? "Ajustar horas de hoy" : tipo === "esta" ? "Ajustar esta semana" : "Ajustar rango de horas");
+
+  if (tipo === "rango") {
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("desde").setLabel("Desde (YYYY-MM-DD)").setValue(formatDate(startOfWeek(new Date()))).setStyle(TextInputStyle.Short).setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId("hasta").setLabel("Hasta (YYYY-MM-DD)").setValue(formatDate(new Date())).setStyle(TextInputStyle.Short).setRequired(true)
+      )
+    );
+  }
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId("horas").setLabel("Total final del periodo").setPlaceholder("Ej.: 8, 7.5, 7,5 o 07:30").setStyle(TextInputStyle.Short).setRequired(true)
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId("motivo").setLabel("Motivo / nota").setPlaceholder("Corrección manual").setStyle(TextInputStyle.Short).setRequired(false)
+    )
+  );
+  return modal;
+}
+
+function crearModalCerrarFichajeEmpleado(data, userId) {
+  const abierta = data.openShifts?.[userId];
+  const inicio = abierta?.start ? new Date(abierta.start) : null;
+  return new ModalBuilder()
+    .setCustomId(`${PREFIX}:modal:cerrar_fichaje:${userId}`)
+    .setTitle("Cerrar fichaje abierto")
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("cierre")
+          .setLabel("Fecha y hora de cierre")
+          .setValue(formatDateTime(new Date()))
+          .setPlaceholder("YYYY-MM-DD HH:MM")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId("motivo")
+          .setLabel("Motivo")
+          .setValue(inicio ? `Fichaje olvidado desde ${formatDateTime(inicio)}`.slice(0, 100) : "Fichaje olvidado")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+      )
+    );
+}
+
 function crearModalModificarHoras() {
   const today = formatDate(new Date());
   return new ModalBuilder()
@@ -1375,7 +1564,7 @@ function crearModalModificarHorasEmpleado(userId) {
 function crearModalPostulacion() {
   return new ModalBuilder()
     .setCustomId(`${PREFIX}:modal:postulacion`)
-    .setTitle("Postulación Top Gear")
+    .setTitle("Postulación Auto Exotic")
     .addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId("nombre_ic").setLabel("Nombre IC").setStyle(TextInputStyle.Short).setRequired(true)
@@ -1459,8 +1648,8 @@ function crearVistaCalculadora(userId) {
     : "No hay servicios añadidos. Pulsa **Añadir** y después el servicio que quieras sumar.";
 
   const embed = new EmbedBuilder()
-    .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("🧮 Calculadora Top Gear")
+    .setColor(COLOR_AUTOEXOTIC_BLUE)
+    .setTitle("🧮 Calculadora Auto Exotic")
     .setDescription(limitarTexto(detalle, 1600))
     .addFields(
       { name: "Modo", value: session.mode === "remove" ? "**Quitar**" : "**Añadir**", inline: true },
@@ -1484,7 +1673,7 @@ function crearVistaCalculadora(userId) {
           return new ButtonBuilder()
             .setCustomId(`${PREFIX}:calc:item:${item.id}`)
             .setLabel(labelBase.slice(0, 80))
-            .setStyle(cantidad > 0 ? ButtonStyle.Success : ButtonStyle.Secondary);
+            .setStyle(cantidad > 0 ? ButtonStyle.Primary : ButtonStyle.Secondary);
         })
       )
     );
@@ -1493,7 +1682,7 @@ function crearVistaCalculadora(userId) {
   const botonAnadir = new ButtonBuilder()
     .setCustomId(`${PREFIX}:calc:modo:add`)
     .setLabel("Añadir")
-    .setStyle(session.mode === "add" ? ButtonStyle.Success : ButtonStyle.Secondary);
+    .setStyle(session.mode === "add" ? ButtonStyle.Primary : ButtonStyle.Secondary);
 
   const botonQuitar = new ButtonBuilder()
     .setCustomId(`${PREFIX}:calc:modo:remove`)
@@ -1513,7 +1702,7 @@ function crearVistaCalculadora(userId) {
       new ButtonBuilder()
         .setCustomId(`${PREFIX}:calc:descuento:${discount}`)
         .setLabel(`${discount}%`)
-        .setStyle(session.discount === discount ? ButtonStyle.Success : ButtonStyle.Primary)
+        .setStyle(session.discount === discount ? ButtonStyle.Primary : ButtonStyle.Primary)
     )
   ));
 
@@ -1657,19 +1846,18 @@ async function consultarEmpleado(interaction, empleadoTexto, range) {
   return interaction.reply(respuestaPrivada({ embeds: [embedEmpleado(data, empleado.userId, range, `Empleado · ${range.label}`)] }));
 }
 
-async function modificarHorasEmpleado(interaction, empleadoTexto, desde, hasta, horasTexto, motivo = "") {
-  if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
-
-  const range = rangoDesdeHasta(desde, hasta);
-  if (!range) return responderError(interaction, "Rango no válido. Usa fechas con formato YYYY-MM-DD y asegúrate de que `hasta` no sea anterior a `desde`." );
-
+async function aplicarTotalHorasEmpleado(interaction, empleado, range, horasTexto, motivo = "") {
   const minutosDeseados = parseHoras(horasTexto);
   if (minutosDeseados === null || minutosDeseados < 0) return responderError(interaction, "Horas no válidas. Usa 8, 7.5, 7,5 o 07:30.");
 
   const data = cargarDatos();
-  const empleado = await resolverEmpleado(interaction, empleadoTexto, data);
-  if (empleado.error) return responderError(interaction, empleado.error);
-
+  const abierta = data.openShifts?.[empleado.userId];
+  if (abierta?.start) {
+    const openStart = new Date(abierta.start).getTime();
+    if (Number.isFinite(openStart) && openStart < range.endExclusive.getTime() && Date.now() >= range.start.getTime()) {
+      return responderError(interaction, "Ese empleado tiene un fichaje abierto dentro del periodo. Ciérralo primero desde esta misma gestión y después ajusta el total.");
+    }
+  }
   const actual = calcularMinutosEmpleado(data, empleado.userId, range).minutos;
   const delta = minutosDeseados - actual;
   const nota = String(motivo || "Corrección manual").trim().slice(0, 80);
@@ -1696,9 +1884,61 @@ async function modificarHorasEmpleado(interaction, empleadoTexto, desde, hasta, 
 
   return interaction.reply(respuestaPrivada({
     content: delta === 0
-      ? "✅ No hizo falta crear ajuste: el total ya coincidía."
-      : `✅ Horas modificadas. Ajuste aplicado: **${minutosAHoras(delta)}**.`,
-    embeds: [embedEmpleado(data, empleado.userId, range, "Resultado tras modificar horas")]
+      ? "✅ El total ya coincidía; no se ha creado ningún ajuste."
+      : `✅ Total actualizado a **${minutosAHoras(minutosDeseados)}**. Ajuste aplicado: **${minutosAHoras(delta)}**.`,
+    embeds: [embedEmpleado(data, empleado.userId, range, "Resultado del ajuste")]
+  }));
+}
+
+async function modificarHorasEmpleado(interaction, empleadoTexto, desde, hasta, horasTexto, motivo = "") {
+  if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+  const range = rangoDesdeHasta(desde, hasta);
+  if (!range) return responderError(interaction, "Rango no válido. Usa fechas con formato YYYY-MM-DD y asegúrate de que `hasta` no sea anterior a `desde`.");
+
+  const data = cargarDatos();
+  const empleado = await resolverEmpleado(interaction, empleadoTexto, data);
+  if (empleado.error) return responderError(interaction, empleado.error);
+  guardarDatos(data);
+  return aplicarTotalHorasEmpleado(interaction, empleado, range, horasTexto, motivo);
+}
+
+async function modificarHorasEmpleadoRango(interaction, userId, range, horasTexto, motivo = "") {
+  if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+  const data = cargarDatos();
+  const empleado = await resolverEmpleado(interaction, userId, data);
+  if (empleado.error) return responderError(interaction, empleado.error);
+  guardarDatos(data);
+  return aplicarTotalHorasEmpleado(interaction, empleado, range, horasTexto, motivo);
+}
+
+async function cerrarFichajeEmpleadoGestion(interaction, userId, cierreTexto, motivo = "") {
+  if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+  const data = cargarDatos();
+  const empleado = await resolverEmpleado(interaction, userId, data);
+  if (empleado.error) return responderError(interaction, empleado.error);
+  const abierta = data.openShifts?.[userId];
+  if (!abierta?.start) return responderError(interaction, "Ese empleado ya no tiene ningún fichaje abierto.");
+
+  const fin = parseDateTimeLocal(cierreTexto);
+  if (!fin) return responderError(interaction, "Fecha/hora no válida. Usa `YYYY-MM-DD HH:MM`, por ejemplo `2026-09-05 18:30`.");
+  const inicio = new Date(abierta.start);
+  if (fin < inicio) return responderError(interaction, `El cierre no puede ser anterior a la entrada (${formatDateTime(inicio)}).`);
+  if (fin.getTime() > Date.now() + 5 * MINUTE) return responderError(interaction, "La hora de cierre no puede estar en el futuro.");
+
+  const cierre = cerrarFichajeAbierto(data, userId, {
+    endAt: fin,
+    displayName: empleado.displayName,
+    reason: String(motivo || "Cierre manual de fichaje olvidado").trim(),
+    automatic: false,
+    closedBy: interaction.user.id,
+    closedByName: nombreMiembro(interaction)
+  });
+  guardarDatos(data);
+  await enviarLog(`🔒 **Fichaje cerrado manualmente** · ${empleado.displayName} (<@${userId}>) · ${formatDateTime(cierre.inicio)} → ${formatDateTime(cierre.fin)} · **${minutosAHoras(cierre.minutos)}** · Por ${nombreMiembro(interaction)}`);
+
+  return interaction.reply(respuestaPrivada({
+    content: `✅ Fichaje cerrado. Turno guardado: **${minutosAHoras(cierre.minutos)}**.`,
+    ...crearPanelGestionHorasEmpleado(data, userId)
   }));
 }
 
@@ -1782,8 +2022,8 @@ async function manejarBotonCalculadora(interaction, id) {
 
 function crearEmbedPostulacion(app) {
   return new EmbedBuilder()
-    .setColor(COLOR_TOPGEAR_GREEN)
-    .setTitle("🏁 Nueva postulación Top Gear")
+    .setColor(COLOR_AUTOEXOTIC_BLUE)
+    .setTitle("🏁 Nueva postulación Auto Exotic")
     .setDescription(`Usuario: <@${app.userId}>`)
     .addFields(
       { name: "Nombre IC", value: app.nombreIc || "-", inline: true },
@@ -1799,7 +2039,7 @@ function crearEmbedPostulacion(app) {
 function crearBotonesRevisionPostulacion(appId, disabled = false) {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${PREFIX}:app:aceptar:${appId}`).setLabel("Aceptar").setStyle(ButtonStyle.Success).setDisabled(disabled),
+      new ButtonBuilder().setCustomId(`${PREFIX}:app:aceptar:${appId}`).setLabel("Aceptar").setStyle(ButtonStyle.Primary).setDisabled(disabled),
       new ButtonBuilder().setCustomId(`${PREFIX}:app:denegar:${appId}`).setLabel("Denegar").setStyle(ButtonStyle.Danger).setDisabled(disabled),
       new ButtonBuilder().setCustomId(`${PREFIX}:app:cerrar:${appId}`).setLabel("Cerrar ticket").setStyle(ButtonStyle.Danger)
     )
@@ -1853,7 +2093,7 @@ async function crearCanalTicketPostulacion(interaction, app) {
     type: ChannelType.GuildText,
     parent: parent || undefined,
     permissionOverwrites: overwrites,
-    topic: `Postulación Top Gear de ${app.displayName} · ${app.userId}`
+    topic: `Postulación Auto Exotic de ${app.displayName} · ${app.userId}`
   });
 
   const pingRevisores = reviewerRoles.length ? reviewerRoles.map(id => `<@&${id}>`).join(" ") : "";
@@ -2002,7 +2242,6 @@ async function enviarBienvenida(member) {
     }
   }
 
-  touchEmpleado(data, member.id, nombreDesdeMember(member), { avatarURL: avatarUsuario(member) });
   guardarDatos(data);
 
   const channelId = config.CHANNELS.WELCOME || config.CHANNELS.POSTULANTES || config.CHANNELS.LOGS;
@@ -2011,8 +2250,8 @@ async function enviarBienvenida(member) {
   if (!channel?.isTextBased()) return;
   await channel.send({
     embeds: [new EmbedBuilder()
-      .setColor(COLOR_TOPGEAR_GREEN)
-      .setTitle("Bienvenido/a a Top Gear")
+      .setColor(COLOR_AUTOEXOTIC_BLUE)
+      .setTitle("Bienvenido/a a Auto Exotic")
       .setDescription(`Bienvenido/a ${member}.
 
 Pásate por postulaciones para crear tu solicitud.`)
@@ -2025,24 +2264,19 @@ Pásate por postulaciones para crear tu solicitud.`)
 async function registrarSalidaMiembro(member) {
   const data = cargarDatos();
   const userId = member.id;
-  const displayName = data.employees?.[userId]?.displayName || nombreDesdeMember(member);
-  const roleIds = member.roles?.cache ? member.roles.cache.filter(role => role.id !== member.guild.id).map(role => role.id) : [];
-  const roleNames = member.roles?.cache ? member.roles.cache.filter(role => role.id !== member.guild.id).map(role => role.name) : [];
-
-  data.formerMembers[userId] = {
-    userId,
+  const displayName = data.employees?.[userId]?.displayName || data.openShifts?.[userId]?.displayName || nombreDesdeMember(member);
+  const cierre = retirarEmpleadoActivo(data, userId, {
     displayName,
-    avatarURL: data.employees?.[userId]?.avatarURL || avatarUsuario(member),
-    roleIds,
-    roleNames,
-    leftAt: new Date().toISOString()
-  };
-  delete data.openShifts[userId];
-
-  if (config.REMOVE_EMPLOYEE_ON_LEAVE) {
-    delete data.employees[userId];
-  }
+    endAt: new Date(),
+    reason: "El usuario ha salido del servidor",
+    automatic: true
+  });
   guardarDatos(data);
+  employeeGuildCache.delete(member.guild.id);
+
+  if (cierre) {
+    await enviarLog(`🔒 **Fichaje cerrado automáticamente** · ${displayName} (<@${userId}>) · Salió del servidor · Turno: **${minutosAHoras(cierre.minutos)}**`);
+  }
 
   const channelId = config.CHANNELS.GOODBYE || config.CHANNELS.LOGS;
   if (!channelId) return;
@@ -2052,10 +2286,65 @@ async function registrarSalidaMiembro(member) {
     embeds: [new EmbedBuilder()
       .setColor(COLOR_WARNING_RED)
       .setTitle("Salida del servidor")
-      .setDescription(`**${displayName}** ha salido del servidor.`)
+      .setDescription(`**${displayName}** ha salido del servidor. Se ha retirado del censo activo${cierre ? " y su fichaje se ha cerrado" : ""}.`)
       .setTimestamp()
     ]
   }).catch(() => {});
+}
+
+async function registrarCambioRolesEmpleado(oldMember, newMember) {
+  const antes = memberTieneRolEmpleado(oldMember);
+  const ahora = memberTieneRolEmpleado(newMember);
+  if (antes === ahora) return;
+
+  const data = cargarDatos();
+  employeeGuildCache.delete(newMember.guild.id);
+
+  if (ahora) {
+    const roleIds = rolesEmpleadosConfigurados().filter(roleId => newMember.roles.cache.has(roleId));
+    const roleNames = roleIds.map(roleId => newMember.guild.roles.cache.get(roleId)?.name || "Rol").filter(Boolean);
+    touchEmpleado(data, newMember.id, nombreDesdeMember(newMember), {
+      avatarURL: avatarUsuario(newMember),
+      roleIds,
+      roleNames
+    });
+    guardarDatos(data);
+    await enviarLog(`👤 **Empleado añadido al censo activo** · ${nombreDesdeMember(newMember)} (<@${newMember.id}>)`);
+    return;
+  }
+
+  const displayName = data.employees?.[newMember.id]?.displayName || nombreDesdeMember(newMember);
+  const cierre = retirarEmpleadoActivo(data, newMember.id, {
+    displayName,
+    endAt: new Date(),
+    reason: "Se ha retirado el rol de empleado",
+    automatic: true
+  });
+  guardarDatos(data);
+  await enviarLog(`👤 **Empleado retirado del censo activo** · ${displayName} (<@${newMember.id}>)${cierre ? ` · Fichaje cerrado: **${minutosAHoras(cierre.minutos)}**` : ""}`);
+}
+
+let employeeSyncTimer = null;
+async function sincronizarEmpleadosAlArrancar() {
+  const guilds = config.GUILD_ID
+    ? [await client.guilds.fetch(config.GUILD_ID).catch(() => null)].filter(Boolean)
+    : [...client.guilds.cache.values()];
+
+  for (const guild of guilds) {
+    const data = cargarDatos();
+    const result = await sincronizarCensoEmpleadosGuild(guild, data);
+    if (result.ok && (result.retirados || result.cerrados)) {
+      console.log(`Censo Auto Exotic sincronizado: ${result.activos.length} activos, ${result.retirados} retirados, ${result.cerrados} fichajes cerrados.`);
+    }
+  }
+}
+
+function iniciarSincronizacionPeriodicaEmpleados() {
+  if (employeeSyncTimer) clearInterval(employeeSyncTimer);
+  employeeSyncTimer = setInterval(() => {
+    sincronizarEmpleadosAlArrancar().catch(error => console.error("Error sincronizando empleados:", error));
+  }, Math.max(1, Number(config.EMPLOYEE_SYNC_MINUTES || 15)) * 60 * 1000);
+  employeeSyncTimer.unref?.();
 }
 
 client.once(Events.ClientReady, async () => {
@@ -2063,6 +2352,8 @@ client.once(Events.ClientReady, async () => {
   logConfiguracionPaneles();
   console.log(`Bot conectado como ${client.user.tag}`);
   await registrarComandos();
+  await sincronizarEmpleadosAlArrancar();
+  iniciarSincronizacionPeriodicaEmpleados();
 
   if (config.AUTO_PUBLISH_PANELS) {
     const publicados = await publicarPaneles();
@@ -2079,6 +2370,10 @@ client.on(Events.GuildMemberAdd, async member => {
 
 client.on(Events.GuildMemberRemove, async member => {
   await registrarSalidaMiembro(member).catch(error => console.error("Error registrando salida:", error));
+});
+
+client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+  await registrarCambioRolesEmpleado(oldMember, newMember).catch(error => console.error("Error sincronizando cambio de roles:", error));
 });
 
 client.on(Events.InteractionCreate, async interaction => {
@@ -2114,6 +2409,20 @@ client.on(Events.InteractionCreate, async interaction => {
         const range = obtenerRangoPorTipo(tipo);
         if (!range) return responderError(interaction, "Rango no válido.");
         return consultarEmpleado(interaction, userId, range);
+      }
+
+      if (id.startsWith(`${PREFIX}:pagos:gestion:`)) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const partes = id.split(":");
+        const userId = partes[3];
+        const accion = partes[4];
+        if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        if (accion === "hoy" || accion === "esta" || accion === "rango") return interaction.showModal(crearModalAjusteGestion(userId, accion));
+        if (accion === "cerrar") {
+          const data = cargarDatos();
+          if (!data.openShifts?.[userId]) return responderError(interaction, "Ese empleado ya no tiene ningún fichaje abierto.");
+          return interaction.showModal(crearModalCerrarFichajeEmpleado(data, userId));
+        }
       }
 
       if (id === `${PREFIX}:pagos:consultar`) {
@@ -2211,7 +2520,10 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
         const userId = interaction.values?.[0];
         if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
-        return interaction.showModal(crearModalModificarHorasEmpleado(userId));
+        const data = cargarDatos();
+        const member = await obtenerMiembroSeguro(interaction.guild, userId);
+        if (!member || (rolesEmpleadosConfigurados().length && !memberTieneRolEmpleado(member))) return responderError(interaction, "Ese usuario ya no es un empleado activo.");
+        return interaction.reply(respuestaPrivada(crearPanelGestionHorasEmpleado(data, userId)));
       }
     }
 
@@ -2244,11 +2556,10 @@ client.on(Events.InteractionCreate, async interaction => {
         if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
         const data = cargarDatos();
         const member = await obtenerMiembroSeguro(interaction.guild, userId);
-        if (member) {
-          touchEmpleado(data, userId, nombreDesdeMember(member), { avatarURL: avatarUsuario(member) });
-          guardarDatos(data);
-        }
-        return interaction.showModal(crearModalModificarHorasEmpleado(userId));
+        if (!member || (rolesEmpleadosConfigurados().length && !memberTieneRolEmpleado(member))) return responderError(interaction, "Ese usuario ya no es un empleado activo.");
+        touchEmpleado(data, userId, nombreDesdeMember(member), { avatarURL: avatarUsuario(member) });
+        guardarDatos(data);
+        return interaction.reply(respuestaPrivada(crearPanelGestionHorasEmpleado(data, userId)));
       }
     }
 
@@ -2298,6 +2609,40 @@ client.on(Events.InteractionCreate, async interaction => {
         }
         if (!range) return responderError(interaction, "Rango no válido. Usa YYYY-MM-DD.");
         return consultarEmpleado(interaction, interaction.fields.getTextInputValue("empleado"), range);
+      }
+
+      if (id.startsWith(`${PREFIX}:modal:ajustar:`)) {
+        if (!puedeGestionarPagos(interaction)) return sinPermiso(interaction);
+        const partes = id.split(":");
+        const tipo = partes[3];
+        const userId = partes[4];
+        if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        let range = tipo === "hoy" ? rangoHoy() : tipo === "esta" ? rangoEstaSemana() : null;
+        if (tipo === "rango") {
+          range = rangoDesdeHasta(
+            interaction.fields.getTextInputValue("desde"),
+            interaction.fields.getTextInputValue("hasta")
+          );
+        }
+        if (!range) return responderError(interaction, "Rango no válido.");
+        return modificarHorasEmpleadoRango(
+          interaction,
+          userId,
+          range,
+          interaction.fields.getTextInputValue("horas"),
+          interaction.fields.getTextInputValue("motivo")
+        );
+      }
+
+      if (id.startsWith(`${PREFIX}:modal:cerrar_fichaje:`)) {
+        const userId = id.replace(`${PREFIX}:modal:cerrar_fichaje:`, "");
+        if (!/^\d{17,20}$/.test(userId || "")) return responderError(interaction, "Empleado no válido.");
+        return cerrarFichajeEmpleadoGestion(
+          interaction,
+          userId,
+          interaction.fields.getTextInputValue("cierre"),
+          interaction.fields.getTextInputValue("motivo")
+        );
       }
 
       if (id.startsWith(`${PREFIX}:modal:modificar_horas:`)) {
