@@ -9,6 +9,7 @@ const {
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
   ChannelType,
+  OverwriteType,
   PermissionFlagsBits,
   ModalBuilder,
   TextInputBuilder,
@@ -2066,23 +2067,56 @@ async function crearCanalTicketPostulacion(interaction, app) {
     throw new Error("Al bot le falta el permiso Gestionar canales para crear tickets de postulación.");
   }
 
-  const reviewerRoles = rolesRevisoresPostulaciones();
+  // Cargar los roles y descartar IDs que no pertenezcan a este servidor.
+  // Los overwrites deben indicar si el ID es un rol o un miembro.
+  let rolesDisponibles;
+  try {
+    rolesDisponibles = await guild.roles.fetch();
+  } catch (error) {
+    throw new Error(`No se pudieron cargar los roles del servidor: ${error.message}`);
+  }
+
+  const reviewerRoles = [];
+  for (const roleId of rolesRevisoresPostulaciones()) {
+    const role = rolesDisponibles.get(roleId);
+    if (!role || role.id === guild.id) {
+      console.warn(`Se ignora el rol revisor ${roleId}: no existe en este servidor o es @everyone.`);
+      continue;
+    }
+    reviewerRoles.push(role);
+  }
+
+  const applicant = await guild.members.fetch(app.userId).catch(() => null);
+  if (!applicant) {
+    throw new Error("El postulante ya no está en el servidor.");
+  }
+
+  const permisosLectura = [
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.ReadMessageHistory
+  ];
+
   const overwrites = [
     {
       id: guild.roles.everyone.id,
+      type: OverwriteType.Role,
       deny: [PermissionFlagsBits.ViewChannel]
     },
     {
-      id: app.userId,
-      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+      id: applicant.id,
+      type: OverwriteType.Member,
+      allow: permisosLectura
     },
     {
-      id: client.user.id,
-      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels]
+      id: me.id,
+      type: OverwriteType.Member,
+      allow: [...permisosLectura, PermissionFlagsBits.ManageChannels]
     },
-    ...reviewerRoles.map(roleId => ({
-      id: roleId,
-      allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+    ...reviewerRoles.map(role => ({
+      id: role.id,
+      type: OverwriteType.Role,
+      allow: permisosLectura
     }))
   ];
 
@@ -2095,7 +2129,7 @@ async function crearCanalTicketPostulacion(interaction, app) {
     topic: `Postulación Auto Exotic de ${app.displayName} · ${app.userId}`
   });
 
-  const pingRevisores = reviewerRoles.length ? reviewerRoles.map(id => `<@&${id}>`).join(" ") : "";
+  const pingRevisores = reviewerRoles.length ? reviewerRoles.map(role => `<@&${role.id}>`).join(" ") : "";
   const mensaje = await channel.send({
     content: `${pingRevisores}\nPostulación de <@${app.userId}>`.trim(),
     embeds: [crearEmbedPostulacion(app)],
