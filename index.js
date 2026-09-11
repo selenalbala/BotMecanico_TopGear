@@ -2266,7 +2266,16 @@ async function manejarCerrarTicketPostulacion(interaction, appId) {
 }
 
 
-async function repararTicketPostulacion(guild, data, app, rolesDisponibles, reviewerRoles, me) {
+function conTimeout(promise, ms = 10000, etiqueta = "Operación de Discord") {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${etiqueta}: tiempo de espera agotado (${Math.round(ms / 1000)}s).`)), ms);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function repararTicketPostulacion(guild, data, app, reviewerRoles, me, canalesDisponibles = null) {
   const permisosLectura = {
     ViewChannel: true,
     SendMessages: true,
@@ -2275,64 +2284,115 @@ async function repararTicketPostulacion(guild, data, app, rolesDisponibles, revi
 
   let channel = null;
 
+  // 1) Lo normal: el ticket ya tiene guardado su ID de canal.
   if (app.ticketChannelId) {
-    channel = await guild.channels.fetch(app.ticketChannelId).catch(() => null);
+    channel = guild.channels.cache.get(app.ticketChannelId) || null;
+    if (!channel) {
+      channel = await conTimeout(
+        guild.channels.fetch(app.ticketChannelId),
+        8000,
+        `Cargar canal ${app.ticketChannelId}`
+      ).catch(() => null);
+    }
   }
 
-  // Compatibilidad con tickets antiguos que no guardaron ticketChannelId.
-  if (!channel) {
-    const canales = await guild.channels.fetch().catch(() => null);
-    if (canales) {
-      const candidatos = [...canales.values()].filter(canal =>
-        canal?.isTextBased?.() &&
-        canal?.type === ChannelType.GuildText &&
-        (String(canal.topic || "").includes(String(app.userId)) ||
-          String(canal.name || "").endsWith(`-${String(app.userId).slice(-4)}`))
-      );
-      channel = candidatos[0] || null;
-      if (channel) app.ticketChannelId = channel.id;
-    }
+  // 2) Compatibilidad con tickets antiguos que no guardaron ticketChannelId.
+  // La lista de canales se carga UNA SOLA VEZ en /reparartickets para no repetir peticiones.
+  if (!channel && canalesDisponibles) {
+    const candidatos = [...canalesDisponibles.values()].filter(canal =>
+      canal?.isTextBased?.() &&
+      canal?.type === ChannelType.GuildText &&
+      (
+        String(canal.topic || "").includes(String(app.userId)) ||
+        String(canal.name || "").endsWith(`-${String(app.userId).slice(-4)}`)
+      )
+    );
+
+    channel = candidatos[0] || null;
+    if (channel) app.ticketChannelId = channel.id;
   }
 
   if (!channel?.isTextBased?.()) {
     return { ok: false, motivo: "canal no encontrado" };
   }
 
-  // Repara permisos del postulante, bot y roles revisores que sí existen.
-  const applicant = await guild.members.fetch(app.userId).catch(() => null);
-  if (applicant) {
-    await channel.permissionOverwrites.edit(applicant.id, permisosLectura).catch(error => {
-      console.warn(`No se pudieron reparar permisos del postulante ${app.userId} en ${channel.id}:`, error.message);
-    });
-  }
+  // IMPORTANTE:
+  // Pasamos type explícitamente para que discord.js NO necesite que el usuario/rol esté
+  // en caché. Esto evita "Supplied parameter is not a cached User or Role".
+  await conTimeout(
+    channel.permissionOverwrites.edit(
+      app.userId,
+      permisosLectura,
+      {
+        type: OverwriteType.Member,
+        reason: "Reparación de ticket de postulación"
+      }
+    ),
+    10000,
+    `Permisos del postulante ${app.userId}`
+  ).catch(error => {
+    console.warn(`No se pudieron reparar permisos del postulante ${app.userId} en ${channel.id}:`, error.message);
+  });
 
   if (me) {
-    await channel.permissionOverwrites.edit(me.id, {
-      ...permisosLectura,
-      ManageChannels: true
-    }).catch(error => {
+    await conTimeout(
+      channel.permissionOverwrites.edit(
+        me.id,
+        {
+          ...permisosLectura,
+          ManageChannels: true
+        },
+        {
+          type: OverwriteType.Member,
+          reason: "Reparación de permisos del bot"
+        }
+      ),
+      10000,
+      `Permisos del bot en ${channel.id}`
+    ).catch(error => {
       console.warn(`No se pudieron reparar permisos del bot en ${channel.id}:`, error.message);
     });
   }
 
   for (const role of reviewerRoles) {
-    await channel.permissionOverwrites.edit(role.id, permisosLectura).catch(error => {
+    await conTimeout(
+      channel.permissionOverwrites.edit(
+        role.id,
+        permisosLectura,
+        {
+          type: OverwriteType.Role,
+          reason: "Reparación de rol revisor de postulaciones"
+        }
+      ),
+      10000,
+      `Permisos del rol ${role.id}`
+    ).catch(error => {
       console.warn(`No se pudieron reparar permisos del rol ${role.id} en ${channel.id}:`, error.message);
     });
   }
 
   let mensaje = null;
+
   if (app.ticketMessageId) {
-    mensaje = await channel.messages.fetch(app.ticketMessageId).catch(() => null);
+    mensaje = await conTimeout(
+      channel.messages.fetch(app.ticketMessageId),
+      8000,
+      `Cargar mensaje ${app.ticketMessageId}`
+    ).catch(() => null);
   }
 
-  // Si el mensaje antiguo ya no está guardado, buscamos el mensaje del bot dentro del ticket.
+  // Si el mensaje antiguo no está guardado, busca un mensaje del bot dentro del ticket.
   if (!mensaje) {
-    const recientes = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+    const recientes = await conTimeout(
+      channel.messages.fetch({ limit: 50 }),
+      8000,
+      `Buscar mensaje del ticket ${channel.id}`
+    ).catch(() => null);
+
     mensaje = recientes?.find(msg =>
       msg.author?.id === client.user?.id &&
       (
-        msg.embeds?.some(embed => String(embed.title || "").includes("postulación Auto Exotic")) ||
+        msg.embeds?.some(embed => String(embed.title || "").toLowerCase().includes("postulación auto exotic")) ||
         msg.components?.some(row => row.components?.some(component =>
           String(component.customId || "").includes(":app:") ||
           String(component.customId || "").includes("postul")
@@ -2348,19 +2408,30 @@ async function repararTicketPostulacion(guild, data, app, rolesDisponibles, revi
   };
 
   if (mensaje) {
-    await mensaje.edit(payload);
+    await conTimeout(
+      mensaje.edit(payload),
+      10000,
+      `Actualizar botones del ticket ${channel.id}`
+    );
   } else {
     const pingRevisores = reviewerRoles.length
       ? reviewerRoles.map(role => `<@&${role.id}>`).join(" ")
       : "";
-    mensaje = await channel.send({
-      content: `${pingRevisores}\nPostulación de <@${app.userId}>`.trim(),
-      ...payload
-    });
+
+    mensaje = await conTimeout(
+      channel.send({
+        content: `${pingRevisores}\nPostulación de <@${app.userId}>`.trim(),
+        ...payload
+      }),
+      10000,
+      `Crear mensaje nuevo en ticket ${channel.id}`
+    );
   }
 
+  app.ticketChannelId = channel.id;
   app.ticketMessageId = mensaje.id;
   data.applications[app.id] = app;
+
   return { ok: true, channelId: channel.id, messageId: mensaje.id };
 }
 
@@ -2377,43 +2448,91 @@ async function repararTicketsPostulaciones(interaction) {
   }
 
   const data = cargarDatos();
-  const apps = Object.values(data.applications || {});
+
+  // Solo nos interesan registros que puedan corresponder a un ticket actual:
+  // - tienen ticketChannelId, o
+  // - siguen pendientes (por compatibilidad con tickets antiguos).
+  const apps = Object.values(data.applications || {})
+    .filter(app => app?.id && app?.userId)
+    .filter(app => app.ticketChannelId || !app.status || app.status === "pendiente");
+
   if (!apps.length) {
-    return interaction.editReply({ content: "ℹ️ No hay postulaciones guardadas para reparar." }).catch(() => {});
+    return interaction.editReply({ content: "ℹ️ No hay tickets de postulación guardados para reparar." }).catch(() => {});
   }
 
   let rolesDisponibles;
   try {
-    rolesDisponibles = await guild.roles.fetch();
+    rolesDisponibles = await conTimeout(
+      guild.roles.fetch(),
+      10000,
+      "Cargar roles del servidor"
+    );
   } catch (error) {
     return interaction.editReply({ content: `❌ No pude cargar los roles del servidor: ${error.message}` }).catch(() => {});
   }
 
   const reviewerRoles = [];
   const rolesInvalidos = [];
+
   for (const roleId of rolesRevisoresPostulaciones()) {
     const role = rolesDisponibles.get(roleId);
     if (!role || role.id === guild.id) {
       rolesInvalidos.push(roleId);
+      console.warn(`Se ignora el rol revisor ${roleId}: no existe en este servidor o es @everyone.`);
       continue;
     }
     reviewerRoles.push(role);
   }
 
-  const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  const me = guild.members.me || await conTimeout(
+    guild.members.fetchMe(),
+    8000,
+    "Cargar miembro del bot"
+  ).catch(() => null);
+
+  // Una sola carga de canales. Si falla, todavía se pueden reparar los que tengan ticketChannelId.
+  const canalesDisponibles = await conTimeout(
+    guild.channels.fetch(),
+    12000,
+    "Cargar canales del servidor"
+  ).catch(error => {
+    console.warn("No se pudo cargar la lista completa de canales para buscar tickets antiguos:", error.message);
+    return guild.channels.cache;
+  });
+
   let reparados = 0;
   let noEncontrados = 0;
   let errores = 0;
+  let procesados = 0;
+
+  // Primero los que ya tienen ID de canal, que son los más rápidos y seguros de localizar.
+  apps.sort((a, b) => Number(Boolean(b.ticketChannelId)) - Number(Boolean(a.ticketChannelId)));
 
   for (const app of apps) {
-    if (!app?.id || !app?.userId) continue;
+    procesados += 1;
+
     try {
-      const result = await repararTicketPostulacion(guild, data, app, rolesDisponibles, reviewerRoles, me);
+      const result = await repararTicketPostulacion(
+        guild,
+        data,
+        app,
+        reviewerRoles,
+        me,
+        canalesDisponibles
+      );
+
       if (result.ok) reparados += 1;
       else noEncontrados += 1;
     } catch (error) {
       errores += 1;
-      console.error(`No se pudo reparar el ticket de ${app.id}:`, error);
+      console.error(`No se pudo reparar el ticket de ${app.id}:`, error.message || error);
+    }
+
+    // Evita que parezca que Discord se ha quedado bloqueado si hay bastantes tickets.
+    if (procesados % 5 === 0 && procesados < apps.length) {
+      await interaction.editReply({
+        content: `🔧 Reparando tickets… **${procesados}/${apps.length}** · Reparados: **${reparados}** · No encontrados: **${noEncontrados}** · Errores: **${errores}**`
+      }).catch(() => {});
     }
   }
 
