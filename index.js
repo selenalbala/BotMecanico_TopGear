@@ -1719,6 +1719,9 @@ async function registrarComandos() {
       .setName("paneles")
       .setDescription("Republica/actualiza los paneles del bot."),
     new SlashCommandBuilder()
+      .setName("reparartickets")
+      .setDescription("Repara permisos y botones de los tickets de postulación abiertos."),
+    new SlashCommandBuilder()
       .setName("horas")
       .setDescription("Consulta horas fichadas.")
       .addUserOption(option => option.setName("empleado").setDescription("Empleado. Si lo dejas vacío, consulta tus horas."))
@@ -2262,6 +2265,169 @@ async function manejarCerrarTicketPostulacion(interaction, appId) {
   }
 }
 
+
+async function repararTicketPostulacion(guild, data, app, rolesDisponibles, reviewerRoles, me) {
+  const permisosLectura = {
+    ViewChannel: true,
+    SendMessages: true,
+    ReadMessageHistory: true
+  };
+
+  let channel = null;
+
+  if (app.ticketChannelId) {
+    channel = await guild.channels.fetch(app.ticketChannelId).catch(() => null);
+  }
+
+  // Compatibilidad con tickets antiguos que no guardaron ticketChannelId.
+  if (!channel) {
+    const canales = await guild.channels.fetch().catch(() => null);
+    if (canales) {
+      const candidatos = [...canales.values()].filter(canal =>
+        canal?.isTextBased?.() &&
+        canal?.type === ChannelType.GuildText &&
+        (String(canal.topic || "").includes(String(app.userId)) ||
+          String(canal.name || "").endsWith(`-${String(app.userId).slice(-4)}`))
+      );
+      channel = candidatos[0] || null;
+      if (channel) app.ticketChannelId = channel.id;
+    }
+  }
+
+  if (!channel?.isTextBased?.()) {
+    return { ok: false, motivo: "canal no encontrado" };
+  }
+
+  // Repara permisos del postulante, bot y roles revisores que sí existen.
+  const applicant = await guild.members.fetch(app.userId).catch(() => null);
+  if (applicant) {
+    await channel.permissionOverwrites.edit(applicant.id, permisosLectura).catch(error => {
+      console.warn(`No se pudieron reparar permisos del postulante ${app.userId} en ${channel.id}:`, error.message);
+    });
+  }
+
+  if (me) {
+    await channel.permissionOverwrites.edit(me.id, {
+      ...permisosLectura,
+      ManageChannels: true
+    }).catch(error => {
+      console.warn(`No se pudieron reparar permisos del bot en ${channel.id}:`, error.message);
+    });
+  }
+
+  for (const role of reviewerRoles) {
+    await channel.permissionOverwrites.edit(role.id, permisosLectura).catch(error => {
+      console.warn(`No se pudieron reparar permisos del rol ${role.id} en ${channel.id}:`, error.message);
+    });
+  }
+
+  let mensaje = null;
+  if (app.ticketMessageId) {
+    mensaje = await channel.messages.fetch(app.ticketMessageId).catch(() => null);
+  }
+
+  // Si el mensaje antiguo ya no está guardado, buscamos el mensaje del bot dentro del ticket.
+  if (!mensaje) {
+    const recientes = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+    mensaje = recientes?.find(msg =>
+      msg.author?.id === client.user?.id &&
+      (
+        msg.embeds?.some(embed => String(embed.title || "").includes("postulación Auto Exotic")) ||
+        msg.components?.some(row => row.components?.some(component =>
+          String(component.customId || "").includes(":app:") ||
+          String(component.customId || "").includes("postul")
+        ))
+      )
+    ) || null;
+  }
+
+  const disabled = Boolean(app.status && app.status !== "pendiente");
+  const payload = {
+    embeds: [crearEmbedPostulacion(app)],
+    components: crearBotonesRevisionPostulacion(app.id, disabled)
+  };
+
+  if (mensaje) {
+    await mensaje.edit(payload);
+  } else {
+    const pingRevisores = reviewerRoles.length
+      ? reviewerRoles.map(role => `<@&${role.id}>`).join(" ")
+      : "";
+    mensaje = await channel.send({
+      content: `${pingRevisores}\nPostulación de <@${app.userId}>`.trim(),
+      ...payload
+    });
+  }
+
+  app.ticketMessageId = mensaje.id;
+  data.applications[app.id] = app;
+  return { ok: true, channelId: channel.id, messageId: mensaje.id };
+}
+
+async function repararTicketsPostulaciones(interaction) {
+  if (!esAdminOEncargado(interaction) && !puedeRevisarPostulaciones(interaction)) {
+    return sinPermiso(interaction);
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
+
+  const guild = interaction.guild;
+  if (!guild) {
+    return interaction.editReply({ content: "❌ No se encontró el servidor." }).catch(() => {});
+  }
+
+  const data = cargarDatos();
+  const apps = Object.values(data.applications || {});
+  if (!apps.length) {
+    return interaction.editReply({ content: "ℹ️ No hay postulaciones guardadas para reparar." }).catch(() => {});
+  }
+
+  let rolesDisponibles;
+  try {
+    rolesDisponibles = await guild.roles.fetch();
+  } catch (error) {
+    return interaction.editReply({ content: `❌ No pude cargar los roles del servidor: ${error.message}` }).catch(() => {});
+  }
+
+  const reviewerRoles = [];
+  const rolesInvalidos = [];
+  for (const roleId of rolesRevisoresPostulaciones()) {
+    const role = rolesDisponibles.get(roleId);
+    if (!role || role.id === guild.id) {
+      rolesInvalidos.push(roleId);
+      continue;
+    }
+    reviewerRoles.push(role);
+  }
+
+  const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  let reparados = 0;
+  let noEncontrados = 0;
+  let errores = 0;
+
+  for (const app of apps) {
+    if (!app?.id || !app?.userId) continue;
+    try {
+      const result = await repararTicketPostulacion(guild, data, app, rolesDisponibles, reviewerRoles, me);
+      if (result.ok) reparados += 1;
+      else noEncontrados += 1;
+    } catch (error) {
+      errores += 1;
+      console.error(`No se pudo reparar el ticket de ${app.id}:`, error);
+    }
+  }
+
+  guardarDatos(data);
+
+  const avisoRoles = rolesInvalidos.length
+    ? `\n⚠️ IDs de rol inválidos que debes quitar/corregir en Railway: ${rolesInvalidos.join(", ")}`
+    : "";
+
+  return interaction.editReply({
+    content: `✅ Reparación terminada. Tickets reparados: **${reparados}** · Canales no encontrados: **${noEncontrados}** · Errores: **${errores}**.${avisoRoles}`
+  }).catch(() => {});
+}
+
 async function enviarBienvenida(member) {
   const data = cargarDatos();
   const roleIds = rolesAplicablesPostulante();
@@ -2428,6 +2594,7 @@ client.on(Events.InteractionCreate, async interaction => {
         return responderOk(interaction, `Paneles actualizados: **${publicados}**.`);
       }
 
+      if (interaction.commandName === "reparartickets") return repararTicketsPostulaciones(interaction);
       if (interaction.commandName === "horas") return manejarComandoHoras(interaction);
       if (interaction.commandName === "sethoras") return manejarComandoSetHoras(interaction);
     }
